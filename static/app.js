@@ -16,7 +16,7 @@ function setStatus(text) {
 
 async function loadGames() {
   resultsEl.innerHTML = "<div class='card'>오늘 경기 불러오는 중...</div>";
-  const res = await fetch(`/api/games?${params()}`);
+  const res = await fetch(`/api/live-games?${params()}`);
   const data = await res.json();
   setStatus(data.meta?.notice || `모드: ${data.meta?.mode || "unknown"}`);
 
