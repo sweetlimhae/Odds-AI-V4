@@ -1,6 +1,4 @@
-자주 사용하는 앱에서 바로 AI를 사용해 보세요 … Gemini를 사용하여 초안을 생성하고 콘텐츠를 다듬고, Google의 차세대 AI가 지원되는 Gemini Pro를 이용하세요.
-1
-100%
+
 from flask import Flask, jsonify, render_template, request
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
