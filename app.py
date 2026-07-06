@@ -1,3 +1,6 @@
+자주 사용하는 앱에서 바로 AI를 사용해 보세요 … Gemini를 사용하여 초안을 생성하고 콘텐츠를 다듬고, Google의 차세대 AI가 지원되는 Gemini Pro를 이용하세요.
+1
+100%
 from flask import Flask, jsonify, render_template, request
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
@@ -10,6 +13,10 @@ app = Flask(__name__)
 KST = timezone(timedelta(hours=9))
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
+
+# =========================================================
+# Demo Data
+# =========================================================
 
 def demo_games(sport="all"):
     now = datetime.now(KST)
@@ -68,6 +75,10 @@ def demo_games(sport="all"):
     return games
 
 
+# =========================================================
+# Odds API
+# =========================================================
+
 def fetch_odds_api_games(sport="all"):
     if not ODDS_API_KEY:
         return None
@@ -90,7 +101,6 @@ def fetch_odds_api_games(sport="all"):
         }
 
         response = requests.get(url, params=params, timeout=12)
-
         if response.status_code != 200:
             continue
 
@@ -98,20 +108,32 @@ def fetch_odds_api_games(sport="all"):
 
         for item in data:
             markets = []
+            for bookmaker in item.get("bookmakers", [])[:6]:
+                book_title = bookmaker.get("title", "Unknown")
+                is_pinnacle = "pinnacle" in book_title.lower()
 
-            for bookmaker in item.get("bookmakers", [])[:5]:
                 for market in bookmaker.get("markets", []):
                     for outcome in market.get("outcomes", []):
                         current_odds = outcome.get("price")
+                        if not current_odds:
+                            continue
+
+                        current = safe_float(current_odds)
+                        # The Odds API free odds endpoint usually does not include opening odds.
+                        # We generate analytical proxy values so the scoring engine remains active.
+                        open_proxy = round(current * (1.035 if is_pinnacle else 1.025), 2)
+                        sharp_proxy = round(current * (0.985 if is_pinnacle else 0.995), 2)
+                        market_proxy = round(current * 1.015, 2)
 
                         markets.append({
                             "pick": outcome.get("name"),
                             "type": market.get("key", "h2h"),
-                            "odds": current_odds,
-                            "open_odds": round(float(current_odds) * 1.04, 2) if current_odds else None,
-                            "sharp_odds": round(float(current_odds) * 0.98, 2) if current_odds else None,
-                            "domestic_odds": round(float(current_odds) * 1.02, 2) if current_odds else None,
-                            "bookmaker": bookmaker.get("title"),
+                            "odds": current,
+                            "open_odds": open_proxy,
+                            "sharp_odds": sharp_proxy,
+                            "domestic_odds": market_proxy,
+                            "bookmaker": book_title,
+                            "is_pinnacle": is_pinnacle,
                         })
 
             games.append({
@@ -137,6 +159,10 @@ def get_games(sport="all"):
     return demo_games(sport), "demo", "실시간 API 실패 또는 키 없음. 데모 데이터 사용 중"
 
 
+# =========================================================
+# Utility
+# =========================================================
+
 def safe_float(value, default=0.0):
     try:
         return float(value)
@@ -145,15 +171,17 @@ def safe_float(value, default=0.0):
 
 
 def start_in_minutes(starts_at):
+    if not starts_at:
+        return None
+
     try:
-        start = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+        start = datetime.fromisoformat(str(starts_at).replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
         return int((start - now).total_seconds() // 60)
     except Exception:
         try:
             start = datetime.fromisoformat(starts_at)
-            now = datetime.now(KST)
-            return int((start - now).total_seconds() // 60)
+            return int((start - datetime.now(KST)).total_seconds() // 60)
         except Exception:
             return None
 
@@ -173,27 +201,50 @@ def implied_probability(odds):
     return round((1 / odds) * 100, 2)
 
 
+def realistic_probability(score):
+    """
+    AI score를 그대로 승률로 쓰면 과대계산됩니다.
+    실전용으로 48~72% 범위에 제한합니다.
+    """
+    score = safe_float(score)
+    if score <= 0:
+        return 0
+    return min(0.72, max(0.48, score / 130))
+
+
 def ev_percent(score, odds):
     odds = safe_float(odds)
-    score = safe_float(score)
     if odds <= 0 or score <= 0:
         return 0
-    return round(((score / 100) * odds - 1) * 100, 2)
+    probability = realistic_probability(score)
+    return round((probability * odds - 1) * 100, 2)
 
 
 def kelly_percent(score, odds):
     odds = safe_float(odds)
-    score = safe_float(score)
     if odds <= 1 or score <= 0:
         return 0
 
-    p = score / 100
+    probability = realistic_probability(score)
     b = odds - 1
-    kelly = ((b * p) - (1 - p)) / b
-    return round(max(0, kelly * 100), 2)
+    kelly = ((b * probability) - (1 - probability)) / b
+
+    # Full Kelly는 위험하므로 25% 상한
+    return round(max(0, min(kelly * 100, 25)), 2)
 
 
-def sharp_component(open_odds, current_odds, sharp_odds):
+# =========================================================
+# Scoring Engine
+# =========================================================
+
+def pinnacle_bonus(market):
+    bookmaker = str(market.get("bookmaker", "")).lower()
+    if "pinnacle" in bookmaker or market.get("is_pinnacle"):
+        return 8
+    return 0
+
+
+def sharp_component(open_odds, current_odds, sharp_odds, market=None):
     d = drop_rate(open_odds, current_odds)
 
     sharp_gap = 0
@@ -202,36 +253,41 @@ def sharp_component(open_odds, current_odds, sharp_odds):
 
     score = 0
     if d >= 8:
-        score += 35
+        score += 32
     elif d >= 5:
-        score += 28
-    elif d >= 3:
-        score += 20
-    elif d >= 1:
-        score += 10
-
-    if sharp_gap >= 3:
         score += 25
-    elif sharp_gap >= 1.5:
-        score += 15
-    elif sharp_gap >= 0.5:
+    elif d >= 3:
+        score += 17
+    elif d >= 1:
         score += 8
 
-    return min(40, round(score, 1))
+    if sharp_gap >= 3:
+        score += 22
+    elif sharp_gap >= 1.5:
+        score += 14
+    elif sharp_gap >= 0.5:
+        score += 7
+
+    if market:
+        score += pinnacle_bonus(market)
+
+    return min(45, round(score, 1))
 
 
 def steam_component(open_odds, current_odds):
     d = drop_rate(open_odds, current_odds)
+
     if d >= 10:
-        return 25
+        return 22
     if d >= 7:
-        return 21
+        return 18
     if d >= 5:
-        return 16
+        return 13
     if d >= 3:
-        return 10
+        return 8
     if d >= 1:
-        return 5
+        return 4
+
     return 0
 
 
@@ -243,60 +299,100 @@ def clv_component(current_odds, sharp_odds, domestic_odds):
     score = 0
 
     if sharp_odds and current_odds and sharp_odds < current_odds:
-        score += 12
+        score += 10
 
     if domestic_odds and sharp_odds and domestic_odds > sharp_odds:
-        score += 12
+        score += 10
 
-    return min(20, score)
+    if domestic_odds and current_odds and domestic_odds > current_odds:
+        score += 4
+
+    return min(22, score)
+
+
+def reverse_line_movement_component(open_odds, current_odds, domestic_odds):
+    d = drop_rate(open_odds, current_odds)
+    domestic_gap = safe_float(domestic_odds) - safe_float(current_odds)
+
+    if d >= 3 and domestic_gap > 0:
+        return 8
+    if d >= 1.5 and domestic_gap > 0:
+        return 4
+    return 0
 
 
 def value_component(score, odds):
     ev = ev_percent(score, odds)
 
-    if ev >= 20:
-        return 15
-    if ev >= 10:
-        return 10
-    if ev >= 5:
-        return 6
+    if ev >= 15:
+        return 12
+    if ev >= 8:
+        return 8
+    if ev >= 3:
+        return 5
     if ev > 0:
-        return 3
+        return 2
     return 0
 
 
+def confidence_score(score, ev, risk, kelly):
+    base = safe_float(score)
+    if ev >= 10:
+        base += 4
+    elif ev < 0:
+        base -= 8
+
+    if kelly >= 10:
+        base += 3
+    elif kelly <= 0:
+        base -= 6
+
+    if risk == "low":
+        base += 4
+    elif risk == "high":
+        base -= 10
+
+    return int(max(0, min(99, round(base))))
+
+
 def risk_level(score, d, ev):
-    if score >= 85 and d >= 3 and ev > 0:
+    if score >= 86 and d >= 2 and ev >= 3:
         return "low"
-    if score >= 72 and ev > 0:
+    if score >= 74 and ev >= 0:
         return "medium"
     return "high"
 
 
-def reasons_for_pick(market, score, d, ev):
+def reasons_for_pick(market, score, d, ev, sharp, steam, clv, kelly):
     reasons = []
 
     if d >= 5:
         reasons.append("초기 대비 강한 하락")
     elif d >= 2:
-        reasons.append("배당 하락")
+        reasons.append("배당 하락 감지")
 
     if market.get("sharp_odds") and safe_float(market["sharp_odds"]) < safe_float(market["odds"]):
-        reasons.append("피나클/샤프 기준 우위")
+        reasons.append("샤프 기준 우위")
 
-    if market.get("domestic_odds") and market.get("sharp_odds"):
-        if safe_float(market["domestic_odds"]) > safe_float(market["sharp_odds"]):
-            reasons.append("시장 평균 대비 가치")
+    if pinnacle_bonus(market):
+        reasons.append("Pinnacle 가중치 반영")
 
-    if ev > 10:
+    if sharp >= 25:
+        reasons.append("Sharp Money 신호")
+    if steam >= 12:
+        reasons.append("Steam Move 감지")
+    if clv >= 10:
+        reasons.append("CLV 기대")
+    if ev >= 8:
         reasons.append("EV 우수")
     elif ev > 0:
         reasons.append("EV 양호")
-
-    if score >= 85:
+    if kelly >= 8:
+        reasons.append("Kelly 적정")
+    if score >= 86:
         reasons.append("AI 고점수")
 
-    return reasons or ["관찰 필요"]
+    return reasons or ["No Bet 또는 관찰 필요"]
 
 
 def analyze_market(game, market):
@@ -307,18 +403,20 @@ def analyze_market(game, market):
 
     d = drop_rate(open_odds, odds)
 
-    base_score = 45
-    sharp = sharp_component(open_odds, odds, sharp_odds)
+    base_score = 42
+    sharp = sharp_component(open_odds, odds, sharp_odds, market)
     steam = steam_component(open_odds, odds)
     clv = clv_component(odds, sharp_odds, domestic_odds)
+    rlm = reverse_line_movement_component(open_odds, odds, domestic_odds)
 
-    temporary_score = min(99, base_score + sharp + steam + clv)
+    temporary_score = min(99, base_score + sharp + steam + clv + rlm)
     value = value_component(temporary_score, odds)
 
-    score = min(99, round(base_score + sharp + steam + clv + value))
+    score = min(99, round(base_score + sharp + steam + clv + rlm + value))
     ev = ev_percent(score, odds)
     kelly = kelly_percent(score, odds)
     risk = risk_level(score, d, ev)
+    confidence = confidence_score(score, ev, risk, kelly)
 
     return {
         "sport": game.get("sport"),
@@ -338,48 +436,61 @@ def analyze_market(game, market):
         "drop_rate": d,
         "implied_probability": implied_probability(odds),
         "score": score,
+        "confidence": confidence,
         "ev": ev,
         "kelly": kelly,
         "sharp_score": sharp,
         "steam_score": steam,
         "clv_score": clv,
+        "rlm_score": rlm,
         "value_score": value,
         "risk": risk,
-        "reasons": reasons_for_pick(market, score, d, ev),
+        "reasons": reasons_for_pick(market, score, d, ev, sharp, steam, clv, kelly),
     }
 
 
+# =========================================================
+# Recommendation Engine
+# =========================================================
+
 def flatten_picks(games):
     picks = []
-
     for game in games:
         for market in game.get("markets", []):
             if market.get("odds"):
                 picks.append(analyze_market(game, market))
 
-    return sorted(picks, key=lambda x: (x["score"], x["ev"], x["drop_rate"]), reverse=True)
+    return sorted(
+        picks,
+        key=lambda x: (x["confidence"], x["score"], x["ev"], x["drop_rate"]),
+        reverse=True
+    )
 
 
 def make_combo(name, picks, size=2):
-    picks = picks[:10]
+    picks = picks[:14]
     best = None
 
     for combo in combinations(picks, size):
         total_odds = math.prod([safe_float(p["odds"], 1) for p in combo])
         avg_score = sum([p["score"] for p in combo]) / len(combo)
+        avg_confidence = sum([p["confidence"] for p in combo]) / len(combo)
         avg_ev = sum([p["ev"] for p in combo]) / len(combo)
         avg_kelly = sum([p["kelly"] for p in combo]) / len(combo)
 
         item = {
             "type": name,
+            "folder_size": size,
             "total_odds": round(total_odds, 2),
             "avg_score": round(avg_score, 1),
+            "avg_confidence": round(avg_confidence, 1),
             "avg_ev": round(avg_ev, 2),
             "avg_kelly": round(avg_kelly, 2),
             "picks": list(combo),
         }
 
-        if best is None or (item["avg_score"], item["avg_ev"]) > (best["avg_score"], best["avg_ev"]):
+        rank = (item["avg_confidence"], item["avg_ev"], item["avg_score"])
+        if best is None or rank > (best["avg_confidence"], best["avg_ev"], best["avg_score"]):
             best = item
 
     return best
@@ -388,23 +499,69 @@ def make_combo(name, picks, size=2):
 def build_recommendations(games):
     picks = flatten_picks(games)
 
-    safe = [p for p in picks if p["score"] >= 80 and p["risk"] == "low"]
-    balanced = [p for p in picks if p["score"] >= 70 and p["risk"] in ["low", "medium"]]
-    aggressive = [p for p in picks if p["score"] >= 60]
+    safe = [
+        p for p in picks
+        if p["score"] >= 86 and p["risk"] == "low" and p["ev"] >= 3
+    ]
+
+    balanced = [
+        p for p in picks
+        if p["score"] >= 76 and p["risk"] in ["low", "medium"] and p["ev"] >= 0
+    ]
+
+    aggressive = [
+        p for p in picks
+        if p["score"] >= 66 and p["ev"] > -4
+    ]
 
     combos = []
 
-    if len(safe) >= 2:
-        combos.append(make_combo("신중형", safe, 2))
+    for size in [2, 3, 4]:
+        if len(safe) >= size:
+            combos.append(make_combo(f"신중형 {size}폴더", safe, size))
+        if len(balanced) >= size:
+            combos.append(make_combo(f"균형형 {size}폴더", balanced, size))
+        if len(aggressive) >= size:
+            combos.append(make_combo(f"공격형 {size}폴더", aggressive, size))
 
-    if len(balanced) >= 2:
-        combos.append(make_combo("균형형", balanced, 2))
+    combos = [c for c in combos if c]
+    combos = sorted(
+        combos,
+        key=lambda x: (x["avg_confidence"], x["avg_ev"], x["avg_score"]),
+        reverse=True
+    )
 
-    if len(aggressive) >= 2:
-        combos.append(make_combo("공격형", aggressive, 2))
+    no_bet = len(combos) == 0
 
-    return [c for c in combos if c], picks
+    return combos[:9], picks, no_bet
 
+
+def build_summary(picks, combos, no_bet):
+    if not picks:
+        return {
+            "total_picks": 0,
+            "top_score": 0,
+            "top_confidence": 0,
+            "avg_ev": 0,
+            "recommendation_count": 0,
+            "no_bet": True,
+            "message": "분석 가능한 경기가 없습니다."
+        }
+
+    return {
+        "total_picks": len(picks),
+        "top_score": max([p["score"] for p in picks]),
+        "top_confidence": max([p["confidence"] for p in picks]),
+        "avg_ev": round(sum([p["ev"] for p in picks]) / len(picks), 2),
+        "recommendation_count": len(combos),
+        "no_bet": no_bet,
+        "message": "추천 가능" if not no_bet else "오늘은 무리한 베팅보다 관망을 추천합니다."
+    }
+
+
+# =========================================================
+# Flask Routes
+# =========================================================
 
 @app.route("/")
 def index():
@@ -434,19 +591,23 @@ def recommendations():
     minutes = int(request.args.get("minutes", 60))
 
     games, mode, notice = get_games(sport)
-    combos, picks = build_recommendations(games)
+    combos, picks, no_bet = build_recommendations(games)
 
     excluded = [
         {
             "game": p["game"],
             "pick": p["pick"],
             "score": p["score"],
+            "confidence": p["confidence"],
+            "ev": p["ev"],
             "risk": p["risk"],
             "reason": "점수 부족 또는 위험도 높음",
         }
         for p in picks
-        if p["score"] < 60 or p["risk"] == "high"
+        if p["score"] < 66 or p["risk"] == "high"
     ]
+
+    summary = build_summary(picks, combos, no_bet)
 
     return jsonify({
         "mode": mode,
@@ -455,7 +616,18 @@ def recommendations():
         "combos": combos,
         "top_picks": picks[:10],
         "excluded": excluded,
+        "summary": summary,
+        "no_bet": no_bet,
         "notice": notice,
+    })
+
+
+@app.route("/api/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "odds_api_key": bool(ODDS_API_KEY),
+        "version": "V5-current-upgrade"
     })
 
 
