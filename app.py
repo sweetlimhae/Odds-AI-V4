@@ -87,3 +87,18 @@ def recommendations():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
+@app.route("/api/live-games")
+def live_games():
+    sport = request.args.get("sport", "all")
+    minutes = int(request.args.get("minutes", 60))
+
+    games = demo_games(sport)
+
+    return jsonify({
+        "mode": "demo",
+        "sport": sport,
+        "minutes": minutes,
+        "count": len(games),
+        "games": games,
+        "notice": "현재는 데모 데이터입니다. 다음 단계에서 실시간 Odds API를 연결합니다."
+    })
