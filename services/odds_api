@@ -1,0 +1,136 @@
+import os
+from datetime import datetime, timedelta, timezone
+import requests
+
+KST = timezone(timedelta(hours=9))
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+
+SPORT_KEYS = {
+    "soccer": ["soccer_epl"],
+    "baseball": ["baseball_mlb"],
+    "all": ["soccer_epl", "baseball_mlb"],
+}
+
+SPORT_LABELS = {
+    "soccer_epl": "EPL",
+    "baseball_mlb": "MLB",
+}
+
+
+def demo_games(sport="all", minutes=60):
+    now = datetime.now(KST)
+    base = [
+        {
+            "id": "demo-soccer-1",
+            "sport": "soccer",
+            "league": "EPL",
+            "home": "Arsenal",
+            "away": "Chelsea",
+            "starts_at": (now + timedelta(minutes=45)).isoformat(),
+            "start_in_minutes": 45,
+            "markets": [
+                {"pick": "Arsenal 승", "type": "h2h", "odds": 1.78, "bookmaker": "DemoBook"},
+                {"pick": "Chelsea 승", "type": "h2h", "odds": 2.14, "bookmaker": "DemoBook"},
+            ],
+        },
+        {
+            "id": "demo-baseball-1",
+            "sport": "baseball",
+            "league": "MLB",
+            "home": "Dodgers",
+            "away": "Padres",
+            "starts_at": (now + timedelta(minutes=58)).isoformat(),
+            "start_in_minutes": 58,
+            "markets": [
+                {"pick": "Dodgers 승", "type": "h2h", "odds": 1.91, "bookmaker": "DemoBook"},
+                {"pick": "Padres 승", "type": "h2h", "odds": 1.96, "bookmaker": "DemoBook"},
+            ],
+        },
+        {
+            "id": "demo-soccer-2",
+            "sport": "soccer",
+            "league": "EPL",
+            "home": "Liverpool",
+            "away": "Tottenham",
+            "starts_at": (now + timedelta(minutes=25)).isoformat(),
+            "start_in_minutes": 25,
+            "markets": [
+                {"pick": "Liverpool 승", "type": "h2h", "odds": 1.66, "bookmaker": "DemoBook"},
+                {"pick": "Tottenham 승", "type": "h2h", "odds": 2.45, "bookmaker": "DemoBook"},
+            ],
+        },
+    ]
+    filtered = [g for g in base if (sport == "all" or g["sport"] == sport) and g["start_in_minutes"] <= minutes]
+    return filtered
+
+
+def _parse_utc_to_kst(iso_value):
+    if not iso_value:
+        return None
+    value = iso_value.replace("Z", "+00:00")
+    return datetime.fromisoformat(value).astimezone(KST)
+
+
+def _fetch_sport_key(sport_key):
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+    params = {
+        "apiKey": ODDS_API_KEY,
+        "regions": "us,eu",
+        "markets": "h2h",
+        "oddsFormat": "decimal",
+    }
+    response = requests.get(url, params=params, timeout=12)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_live_games(sport="all", minutes=60):
+    if not ODDS_API_KEY:
+        return demo_games(sport, minutes), {"mode": "demo", "notice": "ODDS_API_KEY가 없어 데모 데이터를 표시합니다."}
+
+    now = datetime.now(KST)
+    sport_keys = SPORT_KEYS.get(sport, SPORT_KEYS["all"])
+    games = []
+    errors = []
+
+    for sport_key in sport_keys:
+        try:
+            raw_games = _fetch_sport_key(sport_key)
+        except Exception as exc:
+            errors.append(f"{sport_key}: {exc}")
+            continue
+
+        for item in raw_games:
+            start = _parse_utc_to_kst(item.get("commence_time"))
+            if not start:
+                continue
+            start_in_minutes = int((start - now).total_seconds() / 60)
+            if start_in_minutes < 0 or start_in_minutes > minutes:
+                continue
+
+            markets = []
+            for bookmaker in item.get("bookmakers", [])[:5]:
+                for market in bookmaker.get("markets", []):
+                    for outcome in market.get("outcomes", []):
+                        markets.append({
+                            "pick": outcome.get("name"),
+                            "type": market.get("key"),
+                            "odds": outcome.get("price"),
+                            "bookmaker": bookmaker.get("title"),
+                        })
+
+            games.append({
+                "id": item.get("id"),
+                "sport": "soccer" if sport_key.startswith("soccer") else "baseball",
+                "league": SPORT_LABELS.get(sport_key, sport_key),
+                "home": item.get("home_team"),
+                "away": item.get("away_team"),
+                "starts_at": start.isoformat(),
+                "start_in_minutes": start_in_minutes,
+                "markets": markets,
+            })
+
+    if not games and errors:
+        return demo_games(sport, minutes), {"mode": "demo", "notice": "실시간 API 오류로 데모 데이터를 표시합니다.", "errors": errors}
+
+    return games, {"mode": "live", "count": len(games), "errors": errors}
