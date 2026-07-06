@@ -1,4 +1,3 @@
-
 from flask import Flask, jsonify, render_template, request
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
