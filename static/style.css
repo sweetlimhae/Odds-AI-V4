@@ -1,29 +1,108 @@
-* { box-sizing: border-box; }
-body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0c1220; color: #eef3ff; }
-.wrap { max-width: 920px; margin: 0 auto; padding: 24px 14px 60px; }
-.hero { padding: 28px 10px 18px; }
-.hero h1 { margin: 0; font-size: 34px; }
-.hero p { color: #98a6c5; }
-.panel, .card { background: #151e33; border: 1px solid #26324d; border-radius: 18px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.22); }
-.controls { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; align-items: end; }
-label { color: #aeb9d4; font-size: 13px; }
-select, button { width: 100%; border: 0; border-radius: 12px; padding: 13px 14px; font-size: 16px; }
-select { background: #0e1628; color: #fff; border: 1px solid #2b3856; }
-button { background: #2b3a5a; color: #fff; font-weight: 700; cursor: pointer; }
-button.primary { background: #3b82f6; }
-.status { margin: 14px 0; }
-.notice { padding: 12px 14px; border-radius: 12px; background: #1e2b47; color: #cbd8ff; }
-.results { display: grid; gap: 14px; margin-top: 14px; }
-.card h2 { margin: 6px 0 10px; }
-.card h3 { margin: 8px 0; }
-.tag { display: inline-block; font-size: 12px; color: #b7c6e8; background: #202b45; border-radius: 999px; padding: 5px 9px; }
-.markets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.markets span { background: #0f172a; border: 1px solid #2d3a59; border-radius: 999px; padding: 8px 10px; }
-.markets small { color: #93a4c8; }
-.highlight { border-color: #3b82f6; }
-.danger { border-color: #ef4444; }
-.score-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 14px; }
-.score-row b { background: #0f172a; border-radius: 10px; padding: 8px 10px; }
-.pick { border-top: 1px solid #2b3856; padding-top: 12px; margin-top: 12px; }
-.reason { color: #aeb9d4; }
-@media (max-width: 620px) { .controls { grid-template-columns: 1fr; } .hero h1 { font-size: 28px; } }
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:Arial,"Noto Sans KR",sans-serif;
+  background:linear-gradient(135deg,#07111f,#0b2a4a);
+  color:#fff;
+}
+.wrap{max-width:1100px;margin:0 auto;padding:48px 24px}
+.hero h1{font-size:44px;margin:0 0 12px}
+.hero p{color:#b8d7ff;font-weight:700}
+.panel,.card,.notice{
+  background:rgba(255,255,255,.08);
+  border:1px solid rgba(80,180,255,.35);
+  border-radius:22px;
+  padding:24px;
+  margin:18px 0;
+  box-shadow:0 0 24px rgba(0,160,255,.18);
+}
+.controls{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+}
+label{font-weight:800;color:#b8d7ff}
+select,button{
+  width:100%;
+  padding:16px;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.18);
+  background:rgba(255,255,255,.08);
+  color:#fff;
+  font-weight:800;
+}
+button{
+  cursor:pointer;
+  background:linear-gradient(135deg,#248cff,#00c8ff);
+}
+button:hover{filter:brightness(1.15)}
+.card.highlight{
+  border-color:#18d7ff;
+  box-shadow:0 0 30px rgba(0,200,255,.35);
+}
+.card h2{font-size:30px;margin:0 0 16px}
+.pick{
+  margin-top:22px;
+  padding:22px;
+  border-radius:18px;
+  background:rgba(0,0,0,.18);
+  border:1px solid rgba(255,255,255,.12);
+}
+.tag,.rank{
+  display:inline-block;
+  padding:8px 12px;
+  margin-bottom:10px;
+  border-radius:999px;
+  background:rgba(0,200,255,.18);
+  color:#bff3ff;
+  font-weight:900;
+}
+.summary-grid{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:12px;
+  margin:18px 0;
+}
+.summary-grid div{
+  padding:14px;
+  border-radius:14px;
+  background:rgba(255,255,255,.08);
+}
+.summary-grid small{
+  display:block;
+  color:#b8d7ff;
+  margin-bottom:6px;
+}
+.summary-grid b{font-size:20px}
+.meter{
+  width:100%;
+  height:12px;
+  background:rgba(255,255,255,.14);
+  border-radius:999px;
+  overflow:hidden;
+  margin:12px 0 6px;
+}
+.meter-fill{
+  height:100%;
+  background:linear-gradient(90deg,#00ff88,#00d4ff);
+}
+.reason{
+  color:#d5ecff;
+  line-height:1.7;
+  font-weight:700;
+}
+.market{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+  padding:12px;
+  margin:10px 0;
+  border-radius:14px;
+  background:rgba(255,255,255,.08);
+}
+@media(max-width:700px){
+  .wrap{padding:28px 14px}
+  .controls{grid-template-columns:1fr}
+  .summary-grid{grid-template-columns:1fr 1fr}
+  .hero h1{font-size:34px}
+}
