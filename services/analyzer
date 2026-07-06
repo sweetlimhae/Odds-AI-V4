@@ -1,0 +1,84 @@
+from itertools import combinations
+
+
+def _best_pick(game):
+    markets = [m for m in game.get("markets", []) if isinstance(m.get("odds"), (int, float))]
+    if not markets:
+        return None
+    # Conservative scoring: lower fair odds + multiple books is safer.
+    sorted_markets = sorted(markets, key=lambda m: m["odds"])
+    candidate = sorted_markets[0]
+    odds = float(candidate["odds"])
+    implied = 1 / odds if odds > 0 else 0
+    score = round(min(96, max(45, implied * 100 + (2.4 - odds) * 10)), 1)
+    value_score = round(score * odds, 2)
+    return {
+        "game_id": game.get("id"),
+        "sport": game.get("sport"),
+        "league": game.get("league"),
+        "home": game.get("home"),
+        "away": game.get("away"),
+        "start_in_minutes": game.get("start_in_minutes"),
+        "pick": candidate.get("pick"),
+        "odds": odds,
+        "bookmaker": candidate.get("bookmaker"),
+        "score": score,
+        "value_score": value_score,
+        "reasons": [
+            "현재 최저 위험 후보",
+            "시장 배당 기준 점수화",
+            "실시간 API 기반",
+        ],
+    }
+
+
+def _combo_payload(label, picks):
+    if not picks:
+        return {"type": label, "picks": [], "total_odds": 0, "avg_score": 0}
+    total_odds = 1
+    for p in picks:
+        total_odds *= float(p["odds"])
+    avg_score = sum(float(p["score"]) for p in picks) / len(picks)
+    return {
+        "type": label,
+        "picks": picks,
+        "total_odds": round(total_odds, 2),
+        "avg_score": round(avg_score, 1),
+    }
+
+
+def build_recommendations(games):
+    picks = [p for g in games if (p := _best_pick(g))]
+    picks = sorted(picks, key=lambda x: x["score"], reverse=True)
+
+    excluded = []
+    for g in games:
+        if not g.get("markets"):
+            excluded.append({
+                "league": g.get("league"),
+                "home": g.get("home"),
+                "away": g.get("away"),
+                "reason": "배당 데이터 부족",
+            })
+
+    if len(picks) < 2:
+        return {
+            "notice": "2폴더를 만들 경기 수가 부족합니다.",
+            "recommendations": [_combo_payload("단폴 후보", picks[:1])],
+            "excluded": excluded,
+        }
+
+    combos = list(combinations(picks, 2))
+    conservative = max(combos, key=lambda c: (c[0]["score"] + c[1]["score"]) / 2)
+    balanced = max(combos, key=lambda c: ((c[0]["score"] + c[1]["score"]) / 2) * (c[0]["odds"] * c[1]["odds"]))
+    aggressive = max(combos, key=lambda c: c[0]["odds"] * c[1]["odds"])
+
+    return {
+        "notice": "자동베팅 실행 없이 분석 추천만 제공합니다.",
+        "recommendations": [
+            _combo_payload("신중형 2폴더", list(conservative)),
+            _combo_payload("균형형 2폴더", list(balanced)),
+            _combo_payload("공격형 2폴더", list(aggressive)),
+        ],
+        "excluded": excluded,
+    }
