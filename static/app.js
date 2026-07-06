@@ -21,30 +21,22 @@ function renderGames(games) {
     return;
   }
 
-  resultsEl.innerHTML = games
-    .map(
-      (game) => `
-      <article class="card">
-        <div class="tag">${game.sport} · ${game.league}</div>
-        <h2>${game.home} vs ${game.away}</h2>
-        <p>시작시간 : ${game.starts_at ?? "-"}</p>
+  resultsEl.innerHTML = games.map(game => `
+    <article class="card">
+      <div class="tag">${game.sport || ""} · ${game.league}</div>
+      <h2>${game.home} vs ${game.away}</h2>
+      <p>시작시간 : ${game.starts_at || "-"}</p>
 
-        <div class="markets">
-          ${(game.markets || [])
-            .map(
-              (m) => `
-              <div class="market">
-                <b>${m.pick}</b>
-                <span>배당 ${m.odds}</span>
-              </div>
-            `
-            )
-            .join("")}
-        </div>
-      </article>
-    `
-    )
-    .join("");
+      <div class="markets">
+        ${(game.markets || []).map(m => `
+          <div class="market">
+            <b>${m.pick}</b>
+            <span>배당 ${m.odds}</span>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+  `).join("");
 }
 
 async function loadGames() {
@@ -54,9 +46,10 @@ async function loadGames() {
     const res = await fetch(`/api/live-games?${params()}`);
     const data = await res.json();
 
-    setStatus(data.notice || `총 ${data.count}경기`);
+    setStatus(data.notice || `총 ${data.count || 0}경기`);
 
     renderGames(data.games);
+
   } catch (err) {
     console.error(err);
     resultsEl.innerHTML =
@@ -71,43 +64,49 @@ async function analyze() {
     const res = await fetch(`/api/recommendations?${params()}`);
     const data = await res.json();
 
+    console.log(data);
+
+    // combos 또는 recommendations 둘 다 지원
+    const combos = data.combos || data.recommendations || [];
+
     setStatus(data.notice || "AI 분석 완료");
 
-    if (!data.recommendations || data.recommendations.length === 0) {
+    if (combos.length === 0) {
       resultsEl.innerHTML =
         "<div class='card'>추천 결과가 없습니다.</div>";
       return;
     }
 
-    resultsEl.innerHTML = data.recommendations
-      .map(
-        (combo) => `
-        <article class="card highlight">
-          <h2>${combo.type}</h2>
+    resultsEl.innerHTML = combos.map(combo => `
+      <article class="card highlight">
+        <h2>${combo.type || "추천 조합"}</h2>
 
-          <p>
-            총배당 <b>${combo.total_odds}</b> /
-            평균점수 <b>${combo.avg_score}</b>
-          </p>
+        <p>
+          총배당 <b>${combo.total_odds ?? "-"}</b>
+          /
+          평균점수 <b>${combo.avg_score ?? "-"}</b>
+        </p>
 
-          ${(combo.picks || [])
-            .map(
-              (p) => `
-              <div class="pick">
-                <div class="tag">${p.league}</div>
-                <h3>${p.home} vs ${p.away}</h3>
+        ${(combo.picks || []).map(p => `
+          <div class="pick">
+            <div class="tag">${p.league}</div>
 
-                <p><b>${p.pick}</b></p>
-                <p>배당 ${p.odds}</p>
-                <p>점수 ${p.score}</p>
-              </div>
-            `
-            )
-            .join("")}
-        </article>
-      `
-      )
-      .join("");
+            <h3>${p.home} vs ${p.away}</h3>
+
+            <p><b>${p.pick}</b></p>
+
+            <p>배당 ${p.odds}</p>
+
+            <p>점수 ${p.score}</p>
+
+            <p>${(p.reasons || []).join(" · ")}</p>
+
+          </div>
+        `).join("")}
+
+      </article>
+    `).join("");
+
   } catch (err) {
     console.error(err);
     resultsEl.innerHTML =
