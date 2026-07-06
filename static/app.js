@@ -25,11 +25,13 @@ function renderGames(games) {
       <div class="tag">${game.sport || ""} · ${game.league || ""}</div>
       <h2>${game.home || "-"} vs ${game.away || "-"}</h2>
       <p>시작시간 : ${game.starts_at || "-"}</p>
+
       <div class="markets">
         ${(game.markets || []).map(m => `
           <div class="market">
             <b>${m.pick || "-"}</b>
-            <span>배당 ${m.odds ?? "-"}</span>
+            <span>현재배당 ${m.odds ?? "-"}</span>
+            <span>초기배당 ${m.open_odds ?? "-"}</span>
           </div>
         `).join("")}
       </div>
@@ -68,19 +70,43 @@ async function analyze() {
     resultsEl.innerHTML = combos.map(combo => `
       <article class="card highlight">
         <h2>${combo.type || "추천 조합"}</h2>
-        <p>총배당 <b>${combo.total_odds ?? "-"}</b> / 평균점수 <b>${combo.avg_score ?? "-"}</b></p>
+
+        <p>
+          총배당 <b>${combo.total_odds ?? "-"}</b>
+          /
+          평균점수 <b>${combo.avg_score ?? "-"}</b>
+        </p>
 
         ${(combo.picks || []).map(p => `
           <div class="pick">
             <div class="tag">${p.type || p.risk || p.league || ""}</div>
+
             <h3>${p.game || `${p.home || "-"} vs ${p.away || "-"}`}</h3>
+
             <p><b>추천: ${p.pick || "-"}</b></p>
-            <p>배당 ${p.odds ?? "-"} / 점수 ${p.score ?? "-"}</p>
-            <p>${(p.reasons || []).join(" · ")}</p>
+
+            <p>
+              현재배당 ${p.odds ?? "-"}
+              /
+              초기배당 ${p.open_odds ?? "-"}
+            </p>
+
+            <p>
+              하락률 ${p.drop_rate ?? "-"}%
+              /
+              점수 ${p.score ?? "-"}
+            </p>
+
+            <p>위험도 ${p.risk ?? "-"}</p>
+
+            <p class="reason">
+              ${(p.reasons || []).join(" · ")}
+            </p>
           </div>
         `).join("")}
       </article>
     `).join("");
+
   } catch (err) {
     console.error(err);
     resultsEl.innerHTML = "<div class='card'>AI 분석 실패</div>";
