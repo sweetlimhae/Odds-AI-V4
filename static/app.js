@@ -26,8 +26,7 @@ function impliedProb(odds) {
 
 function ev(score, odds) {
   if (!score || !odds) return "-";
-  const prob = score / 100;
-  return ((prob * odds - 1) * 100).toFixed(2);
+  return (((score / 100) * odds - 1) * 100).toFixed(2);
 }
 
 function kelly(score, odds) {
@@ -45,6 +44,53 @@ function grade(score) {
   return "보류";
 }
 
+function sharpScore(p) {
+  const score = Number(p.score || 0);
+  const drop = Number(p.drop_rate ?? dropRate(p.open_odds, p.odds) ?? 0);
+  return Math.min(99, Math.round(score * 0.75 + drop * 3));
+}
+
+function confidenceBar(score) {
+  const safeScore = Math.max(0, Math.min(100, Number(score || 0)));
+  return `
+    <div class="meter">
+      <div class="meter-fill" style="width:${safeScore}%"></div>
+    </div>
+    <small>AI 신뢰도 ${safeScore}%</small>
+  `;
+}
+
+function rankIcon(index) {
+  if (index === 0) return "🥇";
+  if (index === 1) return "🥈";
+  if (index === 2) return "🥉";
+  return `#${index + 1}`;
+}
+
+function renderGames(games) {
+  if (!games || games.length === 0) {
+    resultsEl.innerHTML = "<div class='card'>조건에 맞는 경기가 없습니다.</div>";
+    return;
+  }
+
+  resultsEl.innerHTML = games.map(game => `
+    <article class="card">
+      <div class="tag">${game.sport || ""} · ${game.league || ""}</div>
+      <h2>${game.home || "-"} vs ${game.away || "-"}</h2>
+      <p>시작시간: ${game.starts_at || "-"}</p>
+
+      ${(game.markets || []).map(m => `
+        <div class="market">
+          <b>${m.pick || "-"}</b>
+          <span>현재배당 ${m.odds ?? "-"}</span>
+          <span>초기배당 ${m.open_odds ?? "-"}</span>
+          <span>하락률 ${dropRate(m.open_odds, m.odds)}%</span>
+        </div>
+      `).join("")}
+    </article>
+  `).join("");
+}
+
 async function loadGames() {
   try {
     setStatus("오늘 경기 불러오는 중...");
@@ -52,24 +98,9 @@ async function loadGames() {
     const data = await res.json();
 
     setStatus(data.notice || `총 ${data.count || 0}경기`);
-
-    resultsEl.innerHTML = (data.games || []).map(game => `
-      <article class="card">
-        <div class="tag">${game.sport || ""} · ${game.league || ""}</div>
-        <h2>${game.home || "-"} vs ${game.away || "-"}</h2>
-        <p>시작시간: ${game.starts_at || "-"}</p>
-
-        ${(game.markets || []).map(m => `
-          <div class="market">
-            <b>${m.pick || "-"}</b>
-            <span>현재배당 ${m.odds ?? "-"}</span>
-            <span>초기배당 ${m.open_odds ?? "-"}</span>
-            <span>하락률 ${dropRate(m.open_odds, m.odds)}%</span>
-          </div>
-        `).join("")}
-      </article>
-    `).join("") || "<div class='card'>조건에 맞는 경기가 없습니다.</div>";
+    renderGames(data.games);
   } catch (err) {
+    console.error(err);
     resultsEl.innerHTML = "<div class='card'>경기를 불러오지 못했습니다.</div>";
   }
 }
@@ -83,31 +114,61 @@ async function analyze() {
     const combos = data.combos || data.recommendations || [];
     setStatus(data.notice || "AI 분석 완료");
 
+    if (combos.length === 0) {
+      resultsEl.innerHTML = "<div class='card'>추천 결과가 없습니다.</div>";
+      return;
+    }
+
     resultsEl.innerHTML = combos.map(combo => `
       <article class="card highlight">
         <h2>${combo.type || "추천 조합"}</h2>
-        <p>총배당 <b>${combo.total_odds ?? "-"}</b> / 평균점수 <b>${combo.avg_score ?? "-"}</b></p>
 
-        ${(combo.picks || []).map(p => `
-          <div class="pick">
-            <div class="tag">${p.type || p.risk || ""}</div>
-            <h3>${p.game || `${p.home || "-"} vs ${p.away || "-"}`}</h3>
+        <div class="summary-grid">
+          <div><small>총배당</small><b>${combo.total_odds ?? "-"}</b></div>
+          <div><small>평균점수</small><b>${combo.avg_score ?? "-"}</b></div>
+          <div><small>추천수</small><b>${(combo.picks || []).length}</b></div>
+        </div>
 
-            <p><b>추천: ${p.pick || "-"}</b></p>
-            <p>등급: <b>${grade(p.score || 0)}</b></p>
+        ${(combo.picks || []).map((p, index) => {
+          const score = Number(p.score || 0);
+          const odds = Number(p.odds || 0);
+          const openOdds = Number(p.open_odds || 0);
+          const drop = p.drop_rate ?? dropRate(openOdds, odds);
+          const evValue = ev(score, odds);
+          const sharp = sharpScore(p);
 
-            <p>현재배당 ${p.odds ?? "-"} / 초기배당 ${p.open_odds ?? "-"}</p>
-            <p>하락률 ${p.drop_rate ?? dropRate(p.open_odds, p.odds)}% / 점수 ${p.score ?? "-"}</p>
-            <p>암시확률 ${impliedProb(p.odds)}% / EV ${ev(p.score, p.odds)}%</p>
-            <p>Kelly 기준 ${kelly(p.score, p.odds)}%</p>
-            <p>위험도 ${p.risk ?? "-"}</p>
+          return `
+            <div class="pick">
+              <div class="rank">${rankIcon(index)} 추천순위 ${index + 1}</div>
+              <div class="tag">${p.type || p.risk || ""}</div>
 
-            <p class="reason">${(p.reasons || []).join(" · ")}</p>
-          </div>
-        `).join("")}
+              <h3>${p.game || `${p.home || "-"} vs ${p.away || "-"}`}</h3>
+
+              ${confidenceBar(score)}
+
+              <p><b>추천: ${p.pick || "-"}</b></p>
+              <p>등급: <b>${grade(score)}</b></p>
+
+              <div class="summary-grid">
+                <div><small>현재배당</small><b>${odds || "-"}</b></div>
+                <div><small>초기배당</small><b>${openOdds || "-"}</b></div>
+                <div><small>하락률</small><b>${drop}%</b></div>
+                <div><small>암시확률</small><b>${impliedProb(odds)}%</b></div>
+                <div><small>EV</small><b>${evValue}%</b></div>
+                <div><small>Kelly</small><b>${kelly(score, odds)}%</b></div>
+                <div><small>Sharp</small><b>${sharp}점</b></div>
+                <div><small>위험도</small><b>${p.risk ?? "-"}</b></div>
+              </div>
+
+              <p class="reason">${(p.reasons || []).join(" · ")}</p>
+            </div>
+          `;
+        }).join("")}
       </article>
-    `).join("") || "<div class='card'>추천 결과가 없습니다.</div>";
+    `).join("");
+
   } catch (err) {
+    console.error(err);
     resultsEl.innerHTML = "<div class='card'>AI 분석 실패</div>";
   }
 }
