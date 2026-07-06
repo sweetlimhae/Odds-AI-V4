@@ -627,6 +627,95 @@ def health():
         "version": "V5-current-upgrade"
     })
 
+# =========================================================
+# BMBets Connection Test
+# Add this code near the bottom of app.py, above:
+# if __name__ == "__main__":
+# =========================================================
 
+import re
+
+BMBETS_BASE_URL = "https://www.bmbets.com"
+
+
+def fetch_bmbets_page(path="/value-bets"):
+    """
+    BMBets 공개 페이지 연결 테스트용.
+    로그인 없이 HTML 안에 데이터가 직접 들어있는지,
+    아니면 JS/API 호출이 필요한지 확인하기 위한 함수.
+    """
+    url = BMBETS_BASE_URL + path
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+            "Mobile/15E148 Safari/604.1"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
+    }
+
+    response = requests.get(url, headers=headers, timeout=12)
+
+    html = response.text or ""
+
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    title = title_match.group(1).strip() if title_match else ""
+
+    # JS/CSS/API 후보 추출
+    script_sources = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I)
+    possible_api_paths = sorted(set(re.findall(r'["\']([^"\']*(?:api|ajax|value|odds|event|sure)[^"\']*)["\']', html, re.I)))
+
+    keywords = {
+        "pinnacle": "pinnacle" in html.lower(),
+        "value_bets": "value" in html.lower(),
+        "moving_margins": "moving" in html.lower() or "margin" in html.lower(),
+        "login_required": "login" in html.lower() and ("register" in html.lower() or "filters" in html.lower()),
+    }
+
+    # 너무 길면 응답이 무거워지므로 일부만 반환
+    text_preview = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))[:1200]
+
+    return {
+        "url": url,
+        "status_code": response.status_code,
+        "title": title,
+        "html_length": len(html),
+        "keywords": keywords,
+        "script_sources_sample": script_sources[:20],
+        "possible_api_paths_sample": possible_api_paths[:30],
+        "text_preview": text_preview,
+    }
+
+
+@app.route("/api/bmbets-test")
+def bmbets_test():
+    """
+    사용 예:
+    /api/bmbets-test
+    /api/bmbets-test?path=/moving-margins
+    /api/bmbets-test?path=/value-bets
+    /api/bmbets-test?path=/sure-bets/
+    """
+    path = request.args.get("path", "/value-bets")
+
+    if not path.startswith("/"):
+        path = "/" + path
+
+    try:
+        data = fetch_bmbets_page(path)
+        return jsonify({
+            "ok": True,
+            "source": "bmbets",
+            "data": data,
+            "next_step": "possible_api_paths_sample 또는 script_sources_sample 안에 실제 데이터 호출 주소가 있는지 확인하세요."
+        })
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "source": "bmbets",
+            "error": str(e),
+        }), 500
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
