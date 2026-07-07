@@ -4,7 +4,47 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Odds AI v4</title>
+  <link rel="stylesheet" href="/static/style.css" /><!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Odds AI Pro</title>
   <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <h1>Odds AI Pro</h1>
+      <p>실시간 경기·배당 분석 / 자동베팅 실행 없음</p>
+    </header>
+
+    <section class="panel controls">
+      <label>종목</label>
+      <select id="sport">
+        <option value="all">전체</option>
+        <option value="soccer">축구</option>
+        <option value="baseball">야구</option>
+      </select>
+
+      <label>분석 시간</label>
+      <select id="minutes">
+        <option value="30">30분 전</option>
+        <option value="60" selected>1시간 전</option>
+        <option value="120">2시간 전</option>
+      </select>
+
+      <button id="gamesBtn">오늘 경기</button>
+      <button id="analyzeBtn" class="primary">AI 분석</button>
+    </section>
+
+    <section id="status" class="status"></section>
+    <section id="results" class="results"></section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
 </head>
 <body>
   <main class="wrap">
