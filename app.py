@@ -3,12 +3,102 @@ from datetime import datetime, timedelta, timezone
 from itertools import combinations
 import os
 import math
+import re
 import requests
 
 app = Flask(__name__)
 
 KST = timezone(timedelta(hours=9))
+
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+BMBETS_EMAIL = os.getenv("BMBETS_EMAIL")
+BMBETS_PASSWORD = os.getenv("BMBETS_PASSWORD")
+
+MIN_START_MINUTES = int(os.getenv("MIN_START_MINUTES", "10"))
+MAX_START_MINUTES = int(os.getenv("MAX_START_MINUTES", "120"))
+
+
+# =========================================================
+# Utility
+# =========================================================
+
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def now_kst():
+    return datetime.now(KST)
+
+
+def start_in_minutes(starts_at):
+    if not starts_at:
+        return None
+
+    try:
+        start = datetime.fromisoformat(str(starts_at).replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return int((start - now).total_seconds() // 60)
+    except Exception:
+        try:
+            start = datetime.fromisoformat(str(starts_at))
+            return int((start - now_kst()).total_seconds() // 60)
+        except Exception:
+            return None
+
+
+def is_valid_start_time(starts_at):
+    mins = start_in_minutes(starts_at)
+    if mins is None:
+        return False
+    return MIN_START_MINUTES <= mins <= MAX_START_MINUTES
+
+
+def drop_rate(open_odds, current_odds):
+    open_odds = safe_float(open_odds)
+    current_odds = safe_float(current_odds)
+    if open_odds <= 0 or current_odds <= 0:
+        return 0
+    return round(((open_odds - current_odds) / open_odds) * 100, 2)
+
+
+def implied_probability(odds):
+    odds = safe_float(odds)
+    if odds <= 0:
+        return 0
+    return round((1 / odds) * 100, 2)
+
+
+def realistic_probability(score):
+    score = safe_float(score)
+    if score <= 0:
+        return 0
+    return min(0.72, max(0.48, score / 130))
+
+
+def ev_percent(score, odds):
+    odds = safe_float(odds)
+    if odds <= 0 or score <= 0:
+        return 0
+    probability = realistic_probability(score)
+    return round((probability * odds - 1) * 100, 2)
+
+
+def kelly_percent(score, odds):
+    odds = safe_float(odds)
+    if odds <= 1 or score <= 0:
+        return 0
+
+    probability = realistic_probability(score)
+    b = odds - 1
+    kelly = ((b * probability) - (1 - probability)) / b
+    return round(max(0, min(kelly * 100, 25)), 2)
+
+
+def normalize_text(text):
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 # =========================================================
@@ -16,7 +106,7 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 # =========================================================
 
 def demo_games(sport="all"):
-    now = datetime.now(KST)
+    now = now_kst()
 
     games = [
         {
@@ -26,8 +116,8 @@ def demo_games(sport="all"):
             "away": "두산",
             "starts_at": (now + timedelta(minutes=42)).isoformat(),
             "markets": [
-                {"pick": "LG 승", "type": "ML", "odds": 1.70, "open_odds": 1.82, "sharp_odds": 1.68, "domestic_odds": 1.74, "bookmaker": "Pinnacle"},
-                {"pick": "두산 승", "type": "ML", "odds": 2.12, "open_odds": 2.02, "sharp_odds": 2.18, "domestic_odds": 2.05, "bookmaker": "Pinnacle"},
+                {"pick": "LG 승", "type": "ML", "odds": 1.70, "open_odds": 1.82, "sharp_odds": 1.68, "domestic_odds": 1.74, "bookmaker": "PinnacleSports", "is_pinnacle": True},
+                {"pick": "두산 승", "type": "ML", "odds": 2.12, "open_odds": 2.02, "sharp_odds": 2.18, "domestic_odds": 2.05, "bookmaker": "PinnacleSports", "is_pinnacle": True},
             ],
         },
         {
@@ -37,9 +127,9 @@ def demo_games(sport="all"):
             "away": "Chelsea",
             "starts_at": (now + timedelta(minutes=47)).isoformat(),
             "markets": [
-                {"pick": "Arsenal 승", "type": "1X2", "odds": 1.78, "open_odds": 1.91, "sharp_odds": 1.74, "domestic_odds": 1.84, "bookmaker": "Pinnacle"},
-                {"pick": "무승부", "type": "1X2", "odds": 3.45, "open_odds": 3.30, "sharp_odds": 3.38, "domestic_odds": 3.50, "bookmaker": "Bet365"},
-                {"pick": "Chelsea 승", "type": "1X2", "odds": 4.20, "open_odds": 4.00, "sharp_odds": 4.30, "domestic_odds": 4.10, "bookmaker": "Bet365"},
+                {"pick": "Arsenal 승", "type": "1X2", "odds": 1.78, "open_odds": 1.91, "sharp_odds": 1.74, "domestic_odds": 1.84, "bookmaker": "PinnacleSports", "is_pinnacle": True},
+                {"pick": "무승부", "type": "1X2", "odds": 3.45, "open_odds": 3.30, "sharp_odds": 3.38, "domestic_odds": 3.50, "bookmaker": "Bet365", "is_pinnacle": False},
+                {"pick": "Chelsea 승", "type": "1X2", "odds": 4.20, "open_odds": 4.00, "sharp_odds": 4.30, "domestic_odds": 4.10, "bookmaker": "Bet365", "is_pinnacle": False},
             ],
         },
         {
@@ -49,19 +139,8 @@ def demo_games(sport="all"):
             "away": "Sevilla",
             "starts_at": (now + timedelta(minutes=58)).isoformat(),
             "markets": [
-                {"pick": "Sevilla +0.5", "type": "Handicap", "odds": 1.82, "open_odds": 1.95, "sharp_odds": 1.77, "domestic_odds": 1.86, "bookmaker": "Pinnacle"},
-                {"pick": "Valencia 승", "type": "ML", "odds": 2.05, "open_odds": 1.91, "sharp_odds": 2.12, "domestic_odds": 2.02, "bookmaker": "Bet365"},
-            ],
-        },
-        {
-            "sport": "baseball",
-            "league": "MLB",
-            "home": "Dodgers",
-            "away": "Padres",
-            "starts_at": (now + timedelta(minutes=35)).isoformat(),
-            "markets": [
-                {"pick": "Dodgers 승", "type": "ML", "odds": 1.79, "open_odds": 2.05, "sharp_odds": 1.71, "domestic_odds": 1.88, "bookmaker": "Pinnacle"},
-                {"pick": "Padres +1.5", "type": "Handicap", "odds": 1.91, "open_odds": 1.87, "sharp_odds": 1.94, "domestic_odds": 1.90, "bookmaker": "Bet365"},
+                {"pick": "Sevilla +0.5", "type": "Handicap", "odds": 1.82, "open_odds": 1.95, "sharp_odds": 1.77, "domestic_odds": 1.86, "bookmaker": "PinnacleSports", "is_pinnacle": True},
+                {"pick": "Valencia 승", "type": "ML", "odds": 2.05, "open_odds": 1.91, "sharp_odds": 2.12, "domestic_odds": 2.02, "bookmaker": "Bet365", "is_pinnacle": False},
             ],
         },
     ]
@@ -69,12 +148,22 @@ def demo_games(sport="all"):
     if sport != "all":
         games = [g for g in games if g["sport"] == sport]
 
-    return games
+    return filter_games_by_time(games)
 
 
 # =========================================================
 # Odds API
 # =========================================================
+
+def sort_bookmakers(bookmakers):
+    return sorted(
+        bookmakers or [],
+        key=lambda b: (
+            "pinnacle" not in str(b.get("title", "")).lower(),
+            str(b.get("title", ""))
+        )
+    )
+
 
 def fetch_odds_api_games(sport="all"):
     if not ODDS_API_KEY:
@@ -101,11 +190,11 @@ def fetch_odds_api_games(sport="all"):
         if response.status_code != 200:
             continue
 
-        data = response.json()
-
-        for item in data:
+        for item in response.json():
             markets = []
-            for bookmaker in item.get("bookmakers", [])[:6]:
+            bookmakers = sort_bookmakers(item.get("bookmakers", []))
+
+            for bookmaker in bookmakers[:8]:
                 book_title = bookmaker.get("title", "Unknown")
                 is_pinnacle = "pinnacle" in book_title.lower()
 
@@ -116,9 +205,7 @@ def fetch_odds_api_games(sport="all"):
                             continue
 
                         current = safe_float(current_odds)
-                        # The Odds API free odds endpoint usually does not include opening odds.
-                        # We generate analytical proxy values so the scoring engine remains active.
-                        open_proxy = round(current * (1.035 if is_pinnacle else 1.025), 2)
+                        open_proxy = round(current * (1.04 if is_pinnacle else 1.025), 2)
                         sharp_proxy = round(current * (0.985 if is_pinnacle else 0.995), 2)
                         market_proxy = round(current * 1.015, 2)
 
@@ -131,25 +218,46 @@ def fetch_odds_api_games(sport="all"):
                             "domestic_odds": market_proxy,
                             "bookmaker": book_title,
                             "is_pinnacle": is_pinnacle,
+                            "source": "odds_api",
                         })
 
-            games.append({
+            game = {
                 "sport": sport_name,
                 "league": sport_key,
                 "home": item.get("home_team"),
                 "away": item.get("away_team"),
                 "starts_at": item.get("commence_time"),
                 "markets": markets,
-            })
+            }
 
-    return games or None
+            games.append(game)
+
+    return filter_games_by_time(games) or None
+
+
+def filter_games_by_time(games):
+    filtered = []
+    for game in games or []:
+        mins = start_in_minutes(game.get("starts_at"))
+        game["start_in_minutes"] = mins
+
+        if mins is None:
+            continue
+        if mins < MIN_START_MINUTES:
+            continue
+        if mins > MAX_START_MINUTES:
+            continue
+
+        filtered.append(game)
+
+    return filtered
 
 
 def get_games(sport="all"):
     try:
         live = fetch_odds_api_games(sport)
         if live:
-            return live, "live", "실시간 Odds API 데이터 사용 중"
+            return live, "live", f"실시간 Odds API 데이터 사용 중 / {MIN_START_MINUTES}~{MAX_START_MINUTES}분 경기만 분석"
     except Exception as e:
         print("Odds API error:", e)
 
@@ -157,77 +265,147 @@ def get_games(sport="all"):
 
 
 # =========================================================
-# Utility
+# BMBets Playwright Browser Test
 # =========================================================
 
-def safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def start_in_minutes(starts_at):
-    if not starts_at:
-        return None
-
-    try:
-        start = datetime.fromisoformat(str(starts_at).replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        return int((start - now).total_seconds() // 60)
-    except Exception:
-        try:
-            start = datetime.fromisoformat(starts_at)
-            return int((start - datetime.now(KST)).total_seconds() // 60)
-        except Exception:
-            return None
-
-
-def drop_rate(open_odds, current_odds):
-    open_odds = safe_float(open_odds)
-    current_odds = safe_float(current_odds)
-    if open_odds <= 0 or current_odds <= 0:
-        return 0
-    return round(((open_odds - current_odds) / open_odds) * 100, 2)
-
-
-def implied_probability(odds):
-    odds = safe_float(odds)
-    if odds <= 0:
-        return 0
-    return round((1 / odds) * 100, 2)
-
-
-def realistic_probability(score):
+def fetch_bmbets_browser_text(path="/sure-bets"):
     """
-    AI score를 그대로 승률로 쓰면 과대계산됩니다.
-    실전용으로 48~72% 범위에 제한합니다.
+    BMBets 로그인 후 실제 브라우저에서 페이지 텍스트를 읽는 테스트.
+    Render 무료 서버에서는 Playwright 설치/실행이 실패할 수 있으므로
+    먼저 /api/bmbets-browser-test 로 동작 여부만 확인한다.
     """
-    score = safe_float(score)
-    if score <= 0:
-        return 0
-    return min(0.72, max(0.48, score / 130))
+    if not BMBETS_EMAIL or not BMBETS_PASSWORD:
+        return {
+            "ok": False,
+            "reason": "BMBETS_EMAIL 또는 BMBETS_PASSWORD 환경변수가 없습니다.",
+            "text_preview": "",
+        }
 
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        return {
+            "ok": False,
+            "reason": f"playwright import 실패: {e}",
+            "text_preview": "",
+        }
 
-def ev_percent(score, odds):
-    odds = safe_float(odds)
-    if odds <= 0 or score <= 0:
-        return 0
-    probability = realistic_probability(score)
-    return round((probability * odds - 1) * 100, 2)
+    if not path.startswith("/"):
+        path = "/" + path
 
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        context = browser.new_context(
+            viewport={"width": 1366, "height": 900},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        )
+        page = context.new_page()
 
-def kelly_percent(score, odds):
-    odds = safe_float(odds)
-    if odds <= 1 or score <= 0:
-        return 0
+        login_url = "https://www.bmbets.com/account/login"
+        page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
 
-    probability = realistic_probability(score)
-    b = odds - 1
-    kelly = ((b * probability) - (1 - probability)) / b
+        # 여러 로그인 폼 구조에 대응
+        selectors_email = [
+            "input[type='email']",
+            "input[name='Email']",
+            "input[name='email']",
+            "input[name='UserName']",
+            "input[name='username']",
+            "input[id*='Email']",
+            "input[id*='UserName']",
+        ]
+        selectors_password = [
+            "input[type='password']",
+            "input[name='Password']",
+            "input[name='password']",
+            "input[id*='Password']",
+        ]
 
-    # Full Kelly는 위험하므로 25% 상한
-    return round(max(0, min(kelly * 100, 25)), 2)
+        email_filled = False
+        for sel in selectors_email:
+            try:
+                if page.locator(sel).count() > 0:
+                    page.fill(sel, BMBETS_EMAIL)
+                    email_filled = True
+                    break
+            except Exception:
+                pass
+
+        password_filled = False
+        for sel in selectors_password:
+            try:
+                if page.locator(sel).count() > 0:
+                    page.fill(sel, BMBETS_PASSWORD)
+                    password_filled = True
+                    break
+            except Exception:
+                pass
+
+        if not email_filled or not password_filled:
+            text = normalize_text(page.inner_text("body"))[:2000]
+            browser.close()
+            return {
+                "ok": False,
+                "reason": "로그인 입력창을 찾지 못했습니다.",
+                "email_filled": email_filled,
+                "password_filled": password_filled,
+                "text_preview": text,
+            }
+
+        clicked = False
+        click_selectors = [
+            "button[type='submit']",
+            "input[type='submit']",
+            "button:has-text('Login')",
+            "button:has-text('Log in')",
+            "input[value='Login']",
+        ]
+
+        for sel in click_selectors:
+            try:
+                if page.locator(sel).count() > 0:
+                    page.click(sel)
+                    clicked = True
+                    break
+            except Exception:
+                pass
+
+        if not clicked:
+            page.keyboard.press("Enter")
+
+        page.wait_for_load_state("networkidle", timeout=45000)
+
+        target_url = "https://www.bmbets.com" + path
+        page.goto(target_url, wait_until="networkidle", timeout=45000)
+
+        body_text = normalize_text(page.inner_text("body"))
+        title = page.title()
+        current_url = page.url
+
+        # Pinnacle, odds, bookmaker 키워드 탐지
+        lower = body_text.lower()
+        keyword_flags = {
+            "pinnacle": "pinnacle" in lower,
+            "surebet": "surebet" in lower or "sure bet" in lower,
+            "value": "value" in lower,
+            "odds": "odds" in lower,
+            "login": "login" in lower,
+        }
+
+        browser.close()
+
+        return {
+            "ok": True,
+            "title": title,
+            "current_url": current_url,
+            "path": path,
+            "text_length": len(body_text),
+            "keywords": keyword_flags,
+            "text_preview": body_text[:4000],
+        }
 
 
 # =========================================================
@@ -249,6 +427,7 @@ def sharp_component(open_odds, current_odds, sharp_odds, market=None):
         sharp_gap = (safe_float(current_odds) - safe_float(sharp_odds)) / safe_float(current_odds) * 100
 
     score = 0
+
     if d >= 8:
         score += 32
     elif d >= 5:
@@ -273,7 +452,6 @@ def sharp_component(open_odds, current_odds, sharp_odds, market=None):
 
 def steam_component(open_odds, current_odds):
     d = drop_rate(open_odds, current_odds)
-
     if d >= 10:
         return 22
     if d >= 7:
@@ -284,7 +462,6 @@ def steam_component(open_odds, current_odds):
         return 8
     if d >= 1:
         return 4
-
     return 0
 
 
@@ -297,10 +474,8 @@ def clv_component(current_odds, sharp_odds, domestic_odds):
 
     if sharp_odds and current_odds and sharp_odds < current_odds:
         score += 10
-
     if domestic_odds and sharp_odds and domestic_odds > sharp_odds:
         score += 10
-
     if domestic_odds and current_odds and domestic_odds > current_odds:
         score += 4
 
@@ -334,6 +509,7 @@ def value_component(score, odds):
 
 def confidence_score(score, ev, risk, kelly):
     base = safe_float(score)
+
     if ev >= 10:
         base += 4
     elif ev < 0:
@@ -452,7 +628,10 @@ def analyze_market(game, market):
 
 def flatten_picks(games):
     picks = []
-    for game in games:
+    for game in games or []:
+        if not is_valid_start_time(game.get("starts_at")):
+            continue
+
         for market in game.get("markets", []):
             if market.get("odds"):
                 picks.append(analyze_market(game, market))
@@ -496,20 +675,9 @@ def make_combo(name, picks, size=2):
 def build_recommendations(games):
     picks = flatten_picks(games)
 
-    safe = [
-        p for p in picks
-        if p["score"] >= 86 and p["risk"] == "low" and p["ev"] >= 3
-    ]
-
-    balanced = [
-        p for p in picks
-        if p["score"] >= 76 and p["risk"] in ["low", "medium"] and p["ev"] >= 0
-    ]
-
-    aggressive = [
-        p for p in picks
-        if p["score"] >= 66 and p["ev"] > -4
-    ]
+    safe = [p for p in picks if p["score"] >= 86 and p["risk"] == "low" and p["ev"] >= 3]
+    balanced = [p for p in picks if p["score"] >= 76 and p["risk"] in ["low", "medium"] and p["ev"] >= 0]
+    aggressive = [p for p in picks if p["score"] >= 66 and p["ev"] > -4]
 
     combos = []
 
@@ -522,15 +690,9 @@ def build_recommendations(games):
             combos.append(make_combo(f"공격형 {size}폴더", aggressive, size))
 
     combos = [c for c in combos if c]
-    combos = sorted(
-        combos,
-        key=lambda x: (x["avg_confidence"], x["avg_ev"], x["avg_score"]),
-        reverse=True
-    )
+    combos = sorted(combos, key=lambda x: (x["avg_confidence"], x["avg_ev"], x["avg_score"]), reverse=True)
 
-    no_bet = len(combos) == 0
-
-    return combos[:9], picks, no_bet
+    return combos[:9], picks, len(combos) == 0
 
 
 def build_summary(picks, combos, no_bet):
@@ -542,7 +704,8 @@ def build_summary(picks, combos, no_bet):
             "avg_ev": 0,
             "recommendation_count": 0,
             "no_bet": True,
-            "message": "분석 가능한 경기가 없습니다."
+            "message": "분석 가능한 경기가 없습니다.",
+            "time_filter": f"{MIN_START_MINUTES}~{MAX_START_MINUTES}분",
         }
 
     return {
@@ -552,7 +715,8 @@ def build_summary(picks, combos, no_bet):
         "avg_ev": round(sum([p["ev"] for p in picks]) / len(picks), 2),
         "recommendation_count": len(combos),
         "no_bet": no_bet,
-        "message": "추천 가능" if not no_bet else "오늘은 무리한 베팅보다 관망을 추천합니다."
+        "message": "추천 가능" if not no_bet else "오늘은 무리한 베팅보다 관망을 추천합니다.",
+        "time_filter": f"{MIN_START_MINUTES}~{MAX_START_MINUTES}분",
     }
 
 
@@ -579,6 +743,10 @@ def live_games():
         "count": len(games),
         "games": games,
         "notice": notice,
+        "time_filter": {
+            "min_minutes": MIN_START_MINUTES,
+            "max_minutes": MAX_START_MINUTES,
+        }
     })
 
 
@@ -619,103 +787,39 @@ def recommendations():
     })
 
 
+@app.route("/api/bmbets-browser-test")
+def bmbets_browser_test():
+    path = request.args.get("path", "/sure-bets")
+    try:
+        data = fetch_bmbets_browser_text(path)
+        status = 200 if data.get("ok") else 500
+        return jsonify({
+            "source": "bmbets_playwright",
+            "data": data,
+            "next_step": "ok=true이고 text_preview에 Pinnacle/경기/배당이 보이면 다음 단계에서 파싱 엔진을 연결합니다."
+        }), status
+    except Exception as e:
+        return jsonify({
+            "source": "bmbets_playwright",
+            "ok": False,
+            "error": str(e),
+        }), 500
+
+
 @app.route("/api/health")
 def health():
     return jsonify({
         "status": "ok",
+        "version": "V6-playwright-test",
         "odds_api_key": bool(ODDS_API_KEY),
-        "version": "V5-current-upgrade"
+        "bmbets_email": bool(BMBETS_EMAIL),
+        "bmbets_password": bool(BMBETS_PASSWORD),
+        "time_filter": {
+            "min_minutes": MIN_START_MINUTES,
+            "max_minutes": MAX_START_MINUTES,
+        }
     })
 
-# =========================================================
-# BMBets Connection Test
-# Add this code near the bottom of app.py, above:
-# if __name__ == "__main__":
-# =========================================================
 
-import re
-
-BMBETS_BASE_URL = "https://www.bmbets.com"
-
-
-def fetch_bmbets_page(path="/value-bets"):
-    """
-    BMBets 공개 페이지 연결 테스트용.
-    로그인 없이 HTML 안에 데이터가 직접 들어있는지,
-    아니면 JS/API 호출이 필요한지 확인하기 위한 함수.
-    """
-    url = BMBETS_BASE_URL + path
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
-            "Mobile/15E148 Safari/604.1"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,ko;q=0.8",
-    }
-
-    response = requests.get(url, headers=headers, timeout=12)
-
-    html = response.text or ""
-
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
-    title = title_match.group(1).strip() if title_match else ""
-
-    # JS/CSS/API 후보 추출
-    script_sources = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.I)
-    possible_api_paths = sorted(set(re.findall(r'["\']([^"\']*(?:api|ajax|value|odds|event|sure)[^"\']*)["\']', html, re.I)))
-
-    keywords = {
-        "pinnacle": "pinnacle" in html.lower(),
-        "value_bets": "value" in html.lower(),
-        "moving_margins": "moving" in html.lower() or "margin" in html.lower(),
-        "login_required": "login" in html.lower() and ("register" in html.lower() or "filters" in html.lower()),
-    }
-
-    # 너무 길면 응답이 무거워지므로 일부만 반환
-    text_preview = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))[:1200]
-
-    return {
-        "url": url,
-        "status_code": response.status_code,
-        "title": title,
-        "html_length": len(html),
-        "keywords": keywords,
-        "script_sources_sample": script_sources[:20],
-        "possible_api_paths_sample": possible_api_paths[:30],
-        "text_preview": text_preview,
-    }
-
-
-@app.route("/api/bmbets-test")
-def bmbets_test():
-    """
-    사용 예:
-    /api/bmbets-test
-    /api/bmbets-test?path=/moving-margins
-    /api/bmbets-test?path=/value-bets
-    /api/bmbets-test?path=/sure-bets/
-    """
-    path = request.args.get("path", "/value-bets")
-
-    if not path.startswith("/"):
-        path = "/" + path
-
-    try:
-        data = fetch_bmbets_page(path)
-        return jsonify({
-            "ok": True,
-            "source": "bmbets",
-            "data": data,
-            "next_step": "possible_api_paths_sample 또는 script_sources_sample 안에 실제 데이터 호출 주소가 있는지 확인하세요."
-        })
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "source": "bmbets",
-            "error": str(e),
-        }), 500
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
