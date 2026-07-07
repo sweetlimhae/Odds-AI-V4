@@ -3,27 +3,20 @@ from datetime import datetime, timedelta, timezone
 from itertools import combinations
 import os
 import math
-import re
 import requests
 
 app = Flask(__name__)
 
 KST = timezone(timedelta(hours=9))
-
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
-BMBETS_EMAIL = os.getenv("BMBETS_EMAIL")
-BMBETS_PASSWORD = os.getenv("BMBETS_PASSWORD")
-
 MIN_START_MINUTES = int(os.getenv("MIN_START_MINUTES", "10"))
 MAX_START_MINUTES = int(os.getenv("MAX_START_MINUTES", "120"))
 
 
-# =========================================================
-# Utility
-# =========================================================
-
 def safe_float(value, default=0.0):
     try:
+        if value is None:
+            return default
         return float(value)
     except Exception:
         return default
@@ -36,7 +29,6 @@ def now_kst():
 def start_in_minutes(starts_at):
     if not starts_at:
         return None
-
     try:
         start = datetime.fromisoformat(str(starts_at).replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
@@ -49,11 +41,9 @@ def start_in_minutes(starts_at):
             return None
 
 
-def is_valid_start_time(starts_at):
+def valid_start_time(starts_at):
     mins = start_in_minutes(starts_at)
-    if mins is None:
-        return False
-    return MIN_START_MINUTES <= mins <= MAX_START_MINUTES
+    return mins is not None and MIN_START_MINUTES <= mins <= MAX_START_MINUTES
 
 
 def drop_rate(open_odds, current_odds):
@@ -71,658 +61,387 @@ def implied_probability(odds):
     return round((1 / odds) * 100, 2)
 
 
+def market_average(values):
+    nums = [safe_float(v) for v in values if safe_float(v) > 1]
+    if not nums:
+        return 0
+    return round(sum(nums) / len(nums), 3)
+
+
 def realistic_probability(score):
     score = safe_float(score)
     if score <= 0:
         return 0
-    return min(0.72, max(0.48, score / 130))
+    return min(0.72, max(0.45, score / 135))
 
 
 def ev_percent(score, odds):
     odds = safe_float(odds)
-    if odds <= 0 or score <= 0:
+    if odds <= 1 or score <= 0:
         return 0
-    probability = realistic_probability(score)
-    return round((probability * odds - 1) * 100, 2)
+    p = realistic_probability(score)
+    return round((p * odds - 1) * 100, 2)
 
 
 def kelly_percent(score, odds):
     odds = safe_float(odds)
     if odds <= 1 or score <= 0:
         return 0
-
-    probability = realistic_probability(score)
+    p = realistic_probability(score)
     b = odds - 1
-    kelly = ((b * probability) - (1 - probability)) / b
-    return round(max(0, min(kelly * 100, 25)), 2)
+    k = ((b * p) - (1 - p)) / b
+    return round(max(0, min(k * 100, 15)), 2)
 
-
-def normalize_text(text):
-    return re.sub(r"\s+", " ", text or "").strip()
-
-
-# =========================================================
-# Demo Data
-# =========================================================
 
 def demo_games(sport="all"):
     now = now_kst()
-
     games = [
         {
-            "sport": "baseball",
-            "league": "KBO",
-            "home": "LG",
-            "away": "두산",
+            "sport": "baseball", "league": "KBO", "home": "LG", "away": "두산",
             "starts_at": (now + timedelta(minutes=42)).isoformat(),
             "markets": [
-                {"pick": "LG 승", "type": "ML", "odds": 1.70, "open_odds": 1.82, "sharp_odds": 1.68, "domestic_odds": 1.74, "bookmaker": "PinnacleSports", "is_pinnacle": True},
-                {"pick": "두산 승", "type": "ML", "odds": 2.12, "open_odds": 2.02, "sharp_odds": 2.18, "domestic_odds": 2.05, "bookmaker": "PinnacleSports", "is_pinnacle": True},
+                {"pick": "LG 승", "type": "ML", "odds": 1.70, "open_odds": 1.82, "pinnacle_odds": 1.68, "market_avg": 1.76, "bookmaker": "Pinnacle", "is_pinnacle": True},
+                {"pick": "두산 승", "type": "ML", "odds": 2.12, "open_odds": 2.02, "pinnacle_odds": 2.12, "market_avg": 2.08, "bookmaker": "Pinnacle", "is_pinnacle": True},
             ],
         },
         {
-            "sport": "soccer",
-            "league": "EPL",
-            "home": "Arsenal",
-            "away": "Chelsea",
+            "sport": "soccer", "league": "EPL", "home": "Arsenal", "away": "Chelsea",
             "starts_at": (now + timedelta(minutes=47)).isoformat(),
             "markets": [
-                {"pick": "Arsenal 승", "type": "1X2", "odds": 1.78, "open_odds": 1.91, "sharp_odds": 1.74, "domestic_odds": 1.84, "bookmaker": "PinnacleSports", "is_pinnacle": True},
-                {"pick": "무승부", "type": "1X2", "odds": 3.45, "open_odds": 3.30, "sharp_odds": 3.38, "domestic_odds": 3.50, "bookmaker": "Bet365", "is_pinnacle": False},
-                {"pick": "Chelsea 승", "type": "1X2", "odds": 4.20, "open_odds": 4.00, "sharp_odds": 4.30, "domestic_odds": 4.10, "bookmaker": "Bet365", "is_pinnacle": False},
+                {"pick": "Arsenal", "type": "1X2", "odds": 1.78, "open_odds": 1.91, "pinnacle_odds": 1.74, "market_avg": 1.84, "bookmaker": "Pinnacle", "is_pinnacle": True},
+                {"pick": "Draw", "type": "1X2", "odds": 3.45, "open_odds": 3.30, "pinnacle_odds": 3.42, "market_avg": 3.50, "bookmaker": "Bet365", "is_pinnacle": False},
+                {"pick": "Chelsea", "type": "1X2", "odds": 4.20, "open_odds": 4.00, "pinnacle_odds": 4.18, "market_avg": 4.10, "bookmaker": "Bet365", "is_pinnacle": False},
             ],
         },
         {
-            "sport": "soccer",
-            "league": "LaLiga",
-            "home": "Valencia",
-            "away": "Sevilla",
+            "sport": "soccer", "league": "LaLiga", "home": "Valencia", "away": "Sevilla",
             "starts_at": (now + timedelta(minutes=58)).isoformat(),
             "markets": [
-                {"pick": "Sevilla +0.5", "type": "Handicap", "odds": 1.82, "open_odds": 1.95, "sharp_odds": 1.77, "domestic_odds": 1.86, "bookmaker": "PinnacleSports", "is_pinnacle": True},
-                {"pick": "Valencia 승", "type": "ML", "odds": 2.05, "open_odds": 1.91, "sharp_odds": 2.12, "domestic_odds": 2.02, "bookmaker": "Bet365", "is_pinnacle": False},
+                {"pick": "Sevilla +0.5", "type": "Handicap", "odds": 1.82, "open_odds": 1.95, "pinnacle_odds": 1.77, "market_avg": 1.88, "bookmaker": "Pinnacle", "is_pinnacle": True},
+                {"pick": "Valencia", "type": "ML", "odds": 2.05, "open_odds": 1.91, "pinnacle_odds": 2.04, "market_avg": 2.02, "bookmaker": "Bet365", "is_pinnacle": False},
             ],
         },
     ]
-
     if sport != "all":
         games = [g for g in games if g["sport"] == sport]
+    return [g for g in games if valid_start_time(g.get("starts_at"))]
 
-    return filter_games_by_time(games)
 
-
-# =========================================================
-# Odds API
-# =========================================================
-
-def sort_bookmakers(bookmakers):
-    return sorted(
-        bookmakers or [],
-        key=lambda b: (
-            "pinnacle" not in str(b.get("title", "")).lower(),
-            str(b.get("title", ""))
-        )
-    )
+def supported_sports(sport):
+    keys = []
+    if sport in ["all", "soccer"]:
+        keys.extend([
+            ("soccer", "soccer_epl"),
+            ("soccer", "soccer_spain_la_liga"),
+            ("soccer", "soccer_italy_serie_a"),
+            ("soccer", "soccer_germany_bundesliga"),
+        ])
+    if sport in ["all", "baseball"]:
+        keys.append(("baseball", "baseball_mlb"))
+    return keys
 
 
 def fetch_odds_api_games(sport="all"):
     if not ODDS_API_KEY:
         return None
-
-    sport_keys = []
-    if sport in ["all", "soccer"]:
-        sport_keys.append(("soccer", "soccer_epl"))
-    if sport in ["all", "baseball"]:
-        sport_keys.append(("baseball", "baseball_mlb"))
-
     games = []
-
-    for sport_name, sport_key in sport_keys:
+    for sport_name, sport_key in supported_sports(sport):
         url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
-        params = {
-            "apiKey": ODDS_API_KEY,
-            "regions": "us",
-            "markets": "h2h",
-            "oddsFormat": "decimal",
-        }
-
-        response = requests.get(url, params=params, timeout=12)
+        params = {"apiKey": ODDS_API_KEY, "regions": "us,eu,uk", "markets": "h2h", "oddsFormat": "decimal"}
+        try:
+            response = requests.get(url, params=params, timeout=12)
+        except Exception:
+            continue
         if response.status_code != 200:
             continue
-
         for item in response.json():
-            markets = []
-            bookmakers = sort_bookmakers(item.get("bookmakers", []))
-
-            for bookmaker in bookmakers[:8]:
+            starts_at = item.get("commence_time")
+            if not valid_start_time(starts_at):
+                continue
+            outcome_map = {}
+            for bookmaker in item.get("bookmakers", []):
                 book_title = bookmaker.get("title", "Unknown")
                 is_pinnacle = "pinnacle" in book_title.lower()
-
                 for market in bookmaker.get("markets", []):
+                    if market.get("key") != "h2h":
+                        continue
                     for outcome in market.get("outcomes", []):
-                        current_odds = outcome.get("price")
-                        if not current_odds:
+                        pick = outcome.get("name")
+                        price = safe_float(outcome.get("price"))
+                        if not pick or price <= 1:
                             continue
-
-                        current = safe_float(current_odds)
-                        open_proxy = round(current * (1.04 if is_pinnacle else 1.025), 2)
-                        sharp_proxy = round(current * (0.985 if is_pinnacle else 0.995), 2)
-                        market_proxy = round(current * 1.015, 2)
-
-                        markets.append({
-                            "pick": outcome.get("name"),
-                            "type": market.get("key", "h2h"),
-                            "odds": current,
-                            "open_odds": open_proxy,
-                            "sharp_odds": sharp_proxy,
-                            "domestic_odds": market_proxy,
-                            "bookmaker": book_title,
-                            "is_pinnacle": is_pinnacle,
-                            "source": "odds_api",
-                        })
-
-            game = {
-                "sport": sport_name,
-                "league": sport_key,
-                "home": item.get("home_team"),
-                "away": item.get("away_team"),
-                "starts_at": item.get("commence_time"),
-                "markets": markets,
-            }
-
-            games.append(game)
-
-    return filter_games_by_time(games) or None
-
-
-def filter_games_by_time(games):
-    filtered = []
-    for game in games or []:
-        mins = start_in_minutes(game.get("starts_at"))
-        game["start_in_minutes"] = mins
-
-        if mins is None:
-            continue
-        if mins < MIN_START_MINUTES:
-            continue
-        if mins > MAX_START_MINUTES:
-            continue
-
-        filtered.append(game)
-
-    return filtered
+                        key = pick.lower().strip()
+                        if key not in outcome_map:
+                            outcome_map[key] = {"pick": pick, "type": "h2h", "all_odds": [], "pinnacle_odds": None, "best_odds": price, "best_bookmaker": book_title, "bookmakers": []}
+                        row = outcome_map[key]
+                        row["all_odds"].append(price)
+                        row["bookmakers"].append({"bookmaker": book_title, "odds": price})
+                        if price > row["best_odds"]:
+                            row["best_odds"] = price
+                            row["best_bookmaker"] = book_title
+                        if is_pinnacle:
+                            row["pinnacle_odds"] = price
+            markets = []
+            for row in outcome_map.values():
+                avg = market_average(row["all_odds"])
+                current = safe_float(row["pinnacle_odds"]) or safe_float(row["best_odds"])
+                open_proxy = round(avg * 1.025, 2) if avg else round(current * 1.025, 2)
+                markets.append({
+                    "pick": row["pick"], "type": row["type"], "odds": current, "open_odds": open_proxy,
+                    "pinnacle_odds": row["pinnacle_odds"], "market_avg": avg,
+                    "best_odds": row["best_odds"], "bookmaker": "Pinnacle" if row["pinnacle_odds"] else row["best_bookmaker"],
+                    "is_pinnacle": bool(row["pinnacle_odds"]), "bookmakers": row["bookmakers"][:12], "source": "odds_api_market_average",
+                })
+            if markets:
+                games.append({"sport": sport_name, "league": sport_key, "home": item.get("home_team"), "away": item.get("away_team"), "starts_at": starts_at, "start_in_minutes": start_in_minutes(starts_at), "markets": markets})
+    return games or None
 
 
 def get_games(sport="all"):
     try:
         live = fetch_odds_api_games(sport)
         if live:
-            return live, "live", f"실시간 Odds API 데이터 사용 중 / {MIN_START_MINUTES}~{MAX_START_MINUTES}분 경기만 분석"
+            return live, "live", f"실시간 Odds API 사용 / {MIN_START_MINUTES}~{MAX_START_MINUTES}분 경기만 분석"
     except Exception as e:
         print("Odds API error:", e)
-
     return demo_games(sport), "demo", "실시간 API 실패 또는 키 없음. 데모 데이터 사용 중"
 
 
-# =========================================================
-# BMBets Playwright Browser Test
-# =========================================================
-
-def fetch_bmbets_browser_text(path="/sure-bets"):
-    """
-    BMBets 로그인 후 실제 브라우저에서 페이지 텍스트를 읽는 테스트.
-    Render 무료 서버에서는 Playwright 설치/실행이 실패할 수 있으므로
-    먼저 /api/bmbets-browser-test 로 동작 여부만 확인한다.
-    """
-    if not BMBETS_EMAIL or not BMBETS_PASSWORD:
-        return {
-            "ok": False,
-            "reason": "BMBETS_EMAIL 또는 BMBETS_PASSWORD 환경변수가 없습니다.",
-            "text_preview": "",
-        }
-
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception as e:
-        return {
-            "ok": False,
-            "reason": f"playwright import 실패: {e}",
-            "text_preview": "",
-        }
-
-    if not path.startswith("/"):
-        path = "/" + path
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
-        context = browser.new_context(
-            viewport={"width": 1366, "height": 900},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-        )
-        page = context.new_page()
-
-        login_url = "https://www.bmbets.com/account/login"
-        page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
-
-        # 여러 로그인 폼 구조에 대응
-        selectors_email = [
-            "input[type='email']",
-            "input[name='Email']",
-            "input[name='email']",
-            "input[name='UserName']",
-            "input[name='username']",
-            "input[id*='Email']",
-            "input[id*='UserName']",
-        ]
-        selectors_password = [
-            "input[type='password']",
-            "input[name='Password']",
-            "input[name='password']",
-            "input[id*='Password']",
-        ]
-
-        email_filled = False
-        for sel in selectors_email:
-            try:
-                if page.locator(sel).count() > 0:
-                    page.fill(sel, BMBETS_EMAIL)
-                    email_filled = True
-                    break
-            except Exception:
-                pass
-
-        password_filled = False
-        for sel in selectors_password:
-            try:
-                if page.locator(sel).count() > 0:
-                    page.fill(sel, BMBETS_PASSWORD)
-                    password_filled = True
-                    break
-            except Exception:
-                pass
-
-        if not email_filled or not password_filled:
-            text = normalize_text(page.inner_text("body"))[:2000]
-            browser.close()
-            return {
-                "ok": False,
-                "reason": "로그인 입력창을 찾지 못했습니다.",
-                "email_filled": email_filled,
-                "password_filled": password_filled,
-                "text_preview": text,
-            }
-
-        clicked = False
-        click_selectors = [
-            "button[type='submit']",
-            "input[type='submit']",
-            "button:has-text('Login')",
-            "button:has-text('Log in')",
-            "input[value='Login']",
-        ]
-
-        for sel in click_selectors:
-            try:
-                if page.locator(sel).count() > 0:
-                    page.click(sel)
-                    clicked = True
-                    break
-            except Exception:
-                pass
-
-        if not clicked:
-            page.keyboard.press("Enter")
-
-        page.wait_for_load_state("networkidle", timeout=45000)
-
-        target_url = "https://www.bmbets.com" + path
-        page.goto(target_url, wait_until="networkidle", timeout=45000)
-
-        body_text = normalize_text(page.inner_text("body"))
-        title = page.title()
-        current_url = page.url
-
-        # Pinnacle, odds, bookmaker 키워드 탐지
-        lower = body_text.lower()
-        keyword_flags = {
-            "pinnacle": "pinnacle" in lower,
-            "surebet": "surebet" in lower or "sure bet" in lower,
-            "value": "value" in lower,
-            "odds": "odds" in lower,
-            "login": "login" in lower,
-        }
-
-        browser.close()
-
-        return {
-            "ok": True,
-            "title": title,
-            "current_url": current_url,
-            "path": path,
-            "text_length": len(body_text),
-            "keywords": keyword_flags,
-            "text_preview": body_text[:4000],
-        }
-
-
-# =========================================================
-# Scoring Engine
-# =========================================================
-
 def pinnacle_bonus(market):
-    bookmaker = str(market.get("bookmaker", "")).lower()
-    if "pinnacle" in bookmaker or market.get("is_pinnacle"):
+    return 10 if market.get("is_pinnacle") or "pinnacle" in str(market.get("bookmaker", "")).lower() else 0
+
+
+def value_gap_component(odds, market_avg):
+    odds = safe_float(odds)
+    market_avg = safe_float(market_avg)
+    if odds <= 1 or market_avg <= 1:
+        return 0
+    gap = ((odds - market_avg) / market_avg) * 100
+    if gap >= 5:
+        return 18
+    if gap >= 3:
+        return 13
+    if gap >= 1.5:
         return 8
+    if gap >= 0.5:
+        return 4
+    if gap <= -3:
+        return -10
     return 0
 
 
-def sharp_component(open_odds, current_odds, sharp_odds, market=None):
+def sharp_component(open_odds, current_odds, pinnacle_odds, market_avg, market):
     d = drop_rate(open_odds, current_odds)
-
-    sharp_gap = 0
-    if sharp_odds and current_odds:
-        sharp_gap = (safe_float(current_odds) - safe_float(sharp_odds)) / safe_float(current_odds) * 100
-
     score = 0
-
-    if d >= 8:
-        score += 32
-    elif d >= 5:
+    if d >= 6:
         score += 25
-    elif d >= 3:
-        score += 17
-    elif d >= 1:
+    elif d >= 4:
+        score += 18
+    elif d >= 2:
+        score += 10
+    elif d >= 0.8:
+        score += 5
+    current = safe_float(current_odds)
+    pin = safe_float(pinnacle_odds)
+    avg = safe_float(market_avg)
+    if pin and avg and pin < avg:
+        score += 16
+    elif pin and avg and pin <= avg * 1.01:
         score += 8
-
-    if sharp_gap >= 3:
-        score += 22
-    elif sharp_gap >= 1.5:
-        score += 14
-    elif sharp_gap >= 0.5:
-        score += 7
-
-    if market:
-        score += pinnacle_bonus(market)
-
-    return min(45, round(score, 1))
+    if pin and current and abs(pin - current) / current < 0.015:
+        score += 6
+    score += pinnacle_bonus(market)
+    return max(0, min(45, round(score, 1)))
 
 
 def steam_component(open_odds, current_odds):
     d = drop_rate(open_odds, current_odds)
-    if d >= 10:
+    if d >= 8:
         return 22
-    if d >= 7:
-        return 18
     if d >= 5:
-        return 13
+        return 16
     if d >= 3:
-        return 8
+        return 10
     if d >= 1:
         return 4
     return 0
 
 
-def clv_component(current_odds, sharp_odds, domestic_odds):
-    current_odds = safe_float(current_odds)
-    sharp_odds = safe_float(sharp_odds)
-    domestic_odds = safe_float(domestic_odds)
-
+def clv_component(current_odds, pinnacle_odds, market_avg):
+    current = safe_float(current_odds)
+    pin = safe_float(pinnacle_odds)
+    avg = safe_float(market_avg)
     score = 0
-
-    if sharp_odds and current_odds and sharp_odds < current_odds:
-        score += 10
-    if domestic_odds and sharp_odds and domestic_odds > sharp_odds:
-        score += 10
-    if domestic_odds and current_odds and domestic_odds > current_odds:
-        score += 4
-
-    return min(22, score)
+    if pin and avg and pin < avg:
+        score += 12
+    if current and avg and current >= avg:
+        score += 8
+    if pin and current and current >= pin:
+        score += 6
+    return min(24, score)
 
 
-def reverse_line_movement_component(open_odds, current_odds, domestic_odds):
+def reverse_line_component(open_odds, current_odds, market_avg):
     d = drop_rate(open_odds, current_odds)
-    domestic_gap = safe_float(domestic_odds) - safe_float(current_odds)
-
-    if d >= 3 and domestic_gap > 0:
+    avg = safe_float(market_avg)
+    current = safe_float(current_odds)
+    if d >= 2 and avg and current <= avg:
         return 8
-    if d >= 1.5 and domestic_gap > 0:
+    if d >= 1 and avg and current <= avg * 1.01:
         return 4
     return 0
 
 
-def value_component(score, odds):
-    ev = ev_percent(score, odds)
-
-    if ev >= 15:
-        return 12
-    if ev >= 8:
-        return 8
-    if ev >= 3:
-        return 5
-    if ev > 0:
-        return 2
-    return 0
-
-
-def confidence_score(score, ev, risk, kelly):
-    base = safe_float(score)
-
-    if ev >= 10:
-        base += 4
-    elif ev < 0:
-        base -= 8
-
-    if kelly >= 10:
-        base += 3
-    elif kelly <= 0:
-        base -= 6
-
-    if risk == "low":
-        base += 4
-    elif risk == "high":
-        base -= 10
-
-    return int(max(0, min(99, round(base))))
-
-
-def risk_level(score, d, ev):
-    if score >= 86 and d >= 2 and ev >= 3:
+def risk_level(score, ev, kelly, d):
+    if score >= 86 and ev >= 2 and kelly > 0 and d >= 1:
         return "low"
-    if score >= 74 and ev >= 0:
+    if score >= 76 and ev >= -1:
         return "medium"
     return "high"
 
 
-def reasons_for_pick(market, score, d, ev, sharp, steam, clv, kelly):
+def confidence_score(score, ev, kelly, risk):
+    confidence = safe_float(score)
+    if ev >= 8:
+        confidence += 5
+    elif ev >= 3:
+        confidence += 2
+    elif ev < -3:
+        confidence -= 8
+    if kelly >= 5:
+        confidence += 3
+    elif kelly <= 0:
+        confidence -= 4
+    if risk == "low":
+        confidence += 4
+    elif risk == "high":
+        confidence -= 10
+    return int(max(0, min(99, round(confidence))))
+
+
+def recommendation_grade(confidence):
+    confidence = safe_float(confidence)
+    if confidence >= 92:
+        return "★★★★★ 강추천"
+    if confidence >= 85:
+        return "★★★★ 추천"
+    if confidence >= 76:
+        return "★★★ 관찰"
+    return "No Bet"
+
+
+def reasons_for_pick(market, d, ev, sharp, steam, clv, value_gap, risk, confidence):
     reasons = []
-
-    if d >= 5:
-        reasons.append("초기 대비 강한 하락")
-    elif d >= 2:
+    if market.get("is_pinnacle"):
+        reasons.append("Pinnacle 기준 배당 사용")
+    if d >= 3:
+        reasons.append("초기 대비 배당 하락")
+    elif d >= 1:
         reasons.append("배당 하락 감지")
-
-    if market.get("sharp_odds") and safe_float(market["sharp_odds"]) < safe_float(market["odds"]):
-        reasons.append("샤프 기준 우위")
-
-    if pinnacle_bonus(market):
-        reasons.append("Pinnacle 가중치 반영")
-
     if sharp >= 25:
         reasons.append("Sharp Money 신호")
-    if steam >= 12:
+    if steam >= 10:
         reasons.append("Steam Move 감지")
-    if clv >= 10:
+    if clv >= 14:
         reasons.append("CLV 기대")
-    if ev >= 8:
+    if value_gap >= 8:
+        reasons.append("시장 평균 대비 가치")
+    if ev >= 5:
         reasons.append("EV 우수")
     elif ev > 0:
         reasons.append("EV 양호")
-    if kelly >= 8:
-        reasons.append("Kelly 적정")
-    if score >= 86:
-        reasons.append("AI 고점수")
-
-    return reasons or ["No Bet 또는 관찰 필요"]
+    if risk == "low":
+        reasons.append("위험도 낮음")
+    if confidence >= 85:
+        reasons.append("AI 신뢰도 높음")
+    return reasons or ["추천 근거 부족"]
 
 
 def analyze_market(game, market):
-    open_odds = safe_float(market.get("open_odds"))
     odds = safe_float(market.get("odds"))
-    sharp_odds = safe_float(market.get("sharp_odds"))
-    domestic_odds = safe_float(market.get("domestic_odds"))
-
+    open_odds = safe_float(market.get("open_odds"))
+    pinnacle_odds = safe_float(market.get("pinnacle_odds"))
+    market_avg = safe_float(market.get("market_avg"))
     d = drop_rate(open_odds, odds)
-
-    base_score = 42
-    sharp = sharp_component(open_odds, odds, sharp_odds, market)
+    base = 38
+    sharp = sharp_component(open_odds, odds, pinnacle_odds, market_avg, market)
     steam = steam_component(open_odds, odds)
-    clv = clv_component(odds, sharp_odds, domestic_odds)
-    rlm = reverse_line_movement_component(open_odds, odds, domestic_odds)
-
-    temporary_score = min(99, base_score + sharp + steam + clv + rlm)
-    value = value_component(temporary_score, odds)
-
-    score = min(99, round(base_score + sharp + steam + clv + rlm + value))
+    clv = clv_component(odds, pinnacle_odds, market_avg)
+    value_gap = value_gap_component(odds, market_avg)
+    reverse = reverse_line_component(open_odds, odds, market_avg)
+    raw_score = base + sharp + steam + clv + value_gap + reverse
+    score = int(max(0, min(99, round(raw_score))))
     ev = ev_percent(score, odds)
     kelly = kelly_percent(score, odds)
-    risk = risk_level(score, d, ev)
-    confidence = confidence_score(score, ev, risk, kelly)
-
+    risk = risk_level(score, ev, kelly, d)
+    confidence = confidence_score(score, ev, kelly, risk)
     return {
-        "sport": game.get("sport"),
-        "league": game.get("league"),
-        "game": f"{game.get('league')} {game.get('home')} vs {game.get('away')}",
-        "home": game.get("home"),
-        "away": game.get("away"),
-        "starts_at": game.get("starts_at"),
-        "start_in_minutes": start_in_minutes(game.get("starts_at")),
-        "type": market.get("type"),
-        "pick": market.get("pick"),
-        "bookmaker": market.get("bookmaker"),
-        "odds": odds,
-        "open_odds": open_odds,
-        "sharp_odds": sharp_odds,
-        "domestic_odds": domestic_odds,
-        "drop_rate": d,
-        "implied_probability": implied_probability(odds),
-        "score": score,
-        "confidence": confidence,
-        "ev": ev,
-        "kelly": kelly,
-        "sharp_score": sharp,
-        "steam_score": steam,
-        "clv_score": clv,
-        "rlm_score": rlm,
-        "value_score": value,
-        "risk": risk,
-        "reasons": reasons_for_pick(market, score, d, ev, sharp, steam, clv, kelly),
+        "sport": game.get("sport"), "league": game.get("league"), "game": f"{game.get('league')} {game.get('home')} vs {game.get('away')}",
+        "home": game.get("home"), "away": game.get("away"), "starts_at": game.get("starts_at"), "start_in_minutes": game.get("start_in_minutes") or start_in_minutes(game.get("starts_at")),
+        "type": market.get("type"), "pick": market.get("pick"), "bookmaker": market.get("bookmaker"),
+        "odds": odds, "open_odds": open_odds, "pinnacle_odds": pinnacle_odds, "sharp_odds": pinnacle_odds,
+        "market_avg": market_avg, "domestic_odds": market_avg, "best_odds": market.get("best_odds"),
+        "drop_rate": d, "implied_probability": implied_probability(odds), "score": score, "confidence": confidence,
+        "ev": ev, "kelly": kelly, "sharp_score": sharp, "steam_score": steam, "clv_score": clv,
+        "rlm_score": reverse, "value_score": value_gap, "risk": risk, "grade": recommendation_grade(confidence),
+        "reasons": reasons_for_pick(market, d, ev, sharp, steam, clv, value_gap, risk, confidence),
+        "bookmakers": market.get("bookmakers", []),
     }
 
-
-# =========================================================
-# Recommendation Engine
-# =========================================================
 
 def flatten_picks(games):
     picks = []
     for game in games or []:
-        if not is_valid_start_time(game.get("starts_at")):
+        if not valid_start_time(game.get("starts_at")):
             continue
-
         for market in game.get("markets", []):
-            if market.get("odds"):
+            if safe_float(market.get("odds")) > 1:
                 picks.append(analyze_market(game, market))
-
-    return sorted(
-        picks,
-        key=lambda x: (x["confidence"], x["score"], x["ev"], x["drop_rate"]),
-        reverse=True
-    )
+    return sorted(picks, key=lambda p: (p["confidence"], p["ev"], p["sharp_score"], p["value_score"]), reverse=True)
 
 
-def make_combo(name, picks, size=2):
-    picks = picks[:14]
+def make_combo(name, picks, size):
+    candidates = picks[:12]
     best = None
-
-    for combo in combinations(picks, size):
+    for combo in combinations(candidates, size):
+        game_names = [p["game"] for p in combo]
+        if len(set(game_names)) != len(game_names):
+            continue
         total_odds = math.prod([safe_float(p["odds"], 1) for p in combo])
-        avg_score = sum([p["score"] for p in combo]) / len(combo)
-        avg_confidence = sum([p["confidence"] for p in combo]) / len(combo)
-        avg_ev = sum([p["ev"] for p in combo]) / len(combo)
-        avg_kelly = sum([p["kelly"] for p in combo]) / len(combo)
-
-        item = {
-            "type": name,
-            "folder_size": size,
-            "total_odds": round(total_odds, 2),
-            "avg_score": round(avg_score, 1),
-            "avg_confidence": round(avg_confidence, 1),
-            "avg_ev": round(avg_ev, 2),
-            "avg_kelly": round(avg_kelly, 2),
-            "picks": list(combo),
-        }
-
+        avg_score = sum(p["score"] for p in combo) / size
+        avg_confidence = sum(p["confidence"] for p in combo) / size
+        avg_ev = sum(p["ev"] for p in combo) / size
+        avg_kelly = sum(p["kelly"] for p in combo) / size
+        item = {"type": name, "folder_size": size, "total_odds": round(total_odds, 2), "avg_score": round(avg_score, 1), "avg_confidence": round(avg_confidence, 1), "avg_ev": round(avg_ev, 2), "avg_kelly": round(avg_kelly, 2), "picks": list(combo)}
         rank = (item["avg_confidence"], item["avg_ev"], item["avg_score"])
         if best is None or rank > (best["avg_confidence"], best["avg_ev"], best["avg_score"]):
             best = item
-
     return best
 
 
 def build_recommendations(games):
     picks = flatten_picks(games)
-
-    safe = [p for p in picks if p["score"] >= 86 and p["risk"] == "low" and p["ev"] >= 3]
-    balanced = [p for p in picks if p["score"] >= 76 and p["risk"] in ["low", "medium"] and p["ev"] >= 0]
-    aggressive = [p for p in picks if p["score"] >= 66 and p["ev"] > -4]
-
+    strong = [p for p in picks if p["confidence"] >= 86 and p["risk"] == "low" and p["ev"] >= 2]
+    normal = [p for p in picks if p["confidence"] >= 78 and p["risk"] in ["low", "medium"] and p["ev"] >= -1]
+    watch = [p for p in picks if p["confidence"] >= 70 and p["ev"] >= -4]
     combos = []
-
     for size in [2, 3, 4]:
-        if len(safe) >= size:
-            combos.append(make_combo(f"신중형 {size}폴더", safe, size))
-        if len(balanced) >= size:
-            combos.append(make_combo(f"균형형 {size}폴더", balanced, size))
-        if len(aggressive) >= size:
-            combos.append(make_combo(f"공격형 {size}폴더", aggressive, size))
-
+        if len(strong) >= size:
+            combos.append(make_combo(f"신중형 {size}폴더", strong, size))
+        if len(normal) >= size:
+            combos.append(make_combo(f"균형형 {size}폴더", normal, size))
+        if len(watch) >= size:
+            combos.append(make_combo(f"공격형 {size}폴더", watch, size))
     combos = [c for c in combos if c]
-    combos = sorted(combos, key=lambda x: (x["avg_confidence"], x["avg_ev"], x["avg_score"]), reverse=True)
-
+    combos = sorted(combos, key=lambda c: (c["avg_confidence"], c["avg_ev"], c["avg_score"]), reverse=True)
     return combos[:9], picks, len(combos) == 0
 
 
 def build_summary(picks, combos, no_bet):
     if not picks:
-        return {
-            "total_picks": 0,
-            "top_score": 0,
-            "top_confidence": 0,
-            "avg_ev": 0,
-            "recommendation_count": 0,
-            "no_bet": True,
-            "message": "분석 가능한 경기가 없습니다.",
-            "time_filter": f"{MIN_START_MINUTES}~{MAX_START_MINUTES}분",
-        }
+        return {"total_picks": 0, "top_score": 0, "top_confidence": 0, "avg_ev": 0, "recommendation_count": 0, "no_bet": True, "message": "10~120분 안에 분석 가능한 경기가 없습니다.", "time_filter": f"{MIN_START_MINUTES}~{MAX_START_MINUTES}분"}
+    return {"total_picks": len(picks), "top_score": max(p["score"] for p in picks), "top_confidence": max(p["confidence"] for p in picks), "avg_ev": round(sum(p["ev"] for p in picks) / len(picks), 2), "recommendation_count": len(combos), "no_bet": no_bet, "message": "추천 가능" if not no_bet else "오늘은 무리한 배팅보다 관망을 추천합니다.", "time_filter": f"{MIN_START_MINUTES}~{MAX_START_MINUTES}분"}
 
-    return {
-        "total_picks": len(picks),
-        "top_score": max([p["score"] for p in picks]),
-        "top_confidence": max([p["confidence"] for p in picks]),
-        "avg_ev": round(sum([p["ev"] for p in picks]) / len(picks), 2),
-        "recommendation_count": len(combos),
-        "no_bet": no_bet,
-        "message": "추천 가능" if not no_bet else "오늘은 무리한 베팅보다 관망을 추천합니다.",
-        "time_filter": f"{MIN_START_MINUTES}~{MAX_START_MINUTES}분",
-    }
-
-
-# =========================================================
-# Flask Routes
-# =========================================================
 
 @app.route("/")
 def index():
@@ -733,92 +452,24 @@ def index():
 def live_games():
     sport = request.args.get("sport", "all")
     minutes = int(request.args.get("minutes", 60))
-
     games, mode, notice = get_games(sport)
-
-    return jsonify({
-        "mode": mode,
-        "sport": sport,
-        "minutes": minutes,
-        "count": len(games),
-        "games": games,
-        "notice": notice,
-        "time_filter": {
-            "min_minutes": MIN_START_MINUTES,
-            "max_minutes": MAX_START_MINUTES,
-        }
-    })
+    return jsonify({"mode": mode, "sport": sport, "minutes": minutes, "count": len(games), "games": games, "notice": notice, "time_filter": {"min_minutes": MIN_START_MINUTES, "max_minutes": MAX_START_MINUTES}})
 
 
 @app.route("/api/recommendations")
 def recommendations():
     sport = request.args.get("sport", "all")
     minutes = int(request.args.get("minutes", 60))
-
     games, mode, notice = get_games(sport)
     combos, picks, no_bet = build_recommendations(games)
-
-    excluded = [
-        {
-            "game": p["game"],
-            "pick": p["pick"],
-            "score": p["score"],
-            "confidence": p["confidence"],
-            "ev": p["ev"],
-            "risk": p["risk"],
-            "reason": "점수 부족 또는 위험도 높음",
-        }
-        for p in picks
-        if p["score"] < 66 or p["risk"] == "high"
-    ]
-
     summary = build_summary(picks, combos, no_bet)
-
-    return jsonify({
-        "mode": mode,
-        "sport": sport,
-        "minutes": minutes,
-        "combos": combos,
-        "top_picks": picks[:10],
-        "excluded": excluded,
-        "summary": summary,
-        "no_bet": no_bet,
-        "notice": notice,
-    })
-
-
-@app.route("/api/bmbets-browser-test")
-def bmbets_browser_test():
-    path = request.args.get("path", "/sure-bets")
-    try:
-        data = fetch_bmbets_browser_text(path)
-        status = 200 if data.get("ok") else 500
-        return jsonify({
-            "source": "bmbets_playwright",
-            "data": data,
-            "next_step": "ok=true이고 text_preview에 Pinnacle/경기/배당이 보이면 다음 단계에서 파싱 엔진을 연결합니다."
-        }), status
-    except Exception as e:
-        return jsonify({
-            "source": "bmbets_playwright",
-            "ok": False,
-            "error": str(e),
-        }), 500
+    excluded = [{"game": p["game"], "pick": p["pick"], "score": p["score"], "confidence": p["confidence"], "ev": p["ev"], "risk": p["risk"], "reason": "AI 기준 미달 또는 위험도 높음"} for p in picks if p["confidence"] < 70 or p["risk"] == "high"]
+    return jsonify({"mode": mode, "sport": sport, "minutes": minutes, "combos": combos, "top_picks": picks[:10], "excluded": excluded, "summary": summary, "no_bet": no_bet, "notice": notice})
 
 
 @app.route("/api/health")
 def health():
-    return jsonify({
-        "status": "ok",
-        "version": "V6-playwright-test",
-        "odds_api_key": bool(ODDS_API_KEY),
-        "bmbets_email": bool(BMBETS_EMAIL),
-        "bmbets_password": bool(BMBETS_PASSWORD),
-        "time_filter": {
-            "min_minutes": MIN_START_MINUTES,
-            "max_minutes": MAX_START_MINUTES,
-        }
-    })
+    return jsonify({"status": "ok", "version": "V6-stable-no-playwright", "odds_api_key": bool(ODDS_API_KEY), "time_filter": {"min_minutes": MIN_START_MINUTES, "max_minutes": MAX_START_MINUTES}, "playwright": "disabled_due_to_render_free_memory_limit"})
 
 
 if __name__ == "__main__":
